@@ -82,12 +82,6 @@ func init() {
 }
 
 func runMayorStart(cmd *cobra.Command, args []string) error {
-	// Find workspace root
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
 	t := tmux.NewTmux()
 
 	// Check if session already exists
@@ -97,6 +91,25 @@ func runMayorStart(cmd *cobra.Command, args []string) error {
 	}
 	if running {
 		return fmt.Errorf("Mayor session already running. Attach with: gt mayor attach")
+	}
+
+	if err := startMayorSession(t); err != nil {
+		return err
+	}
+
+	fmt.Printf("%s Mayor session started. Attach with: %s\n",
+		style.Bold.Render("✓"),
+		style.Dim.Render("gt mayor attach"))
+
+	return nil
+}
+
+// startMayorSession creates and initializes the Mayor tmux session.
+func startMayorSession(t *tmux.Tmux) error {
+	// Find workspace root
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	// Create session in workspace root
@@ -109,14 +122,14 @@ func runMayorStart(cmd *cobra.Command, args []string) error {
 	t.SetEnvironment(MayorSessionName, "GT_ROLE", "mayor")
 
 	// Launch Claude with full permissions (Mayor is trusted)
-	command := "claude --dangerously-skip-permissions"
-	if err := t.SendKeys(MayorSessionName, command); err != nil {
+	if err := t.SendKeys(MayorSessionName, "claude --dangerously-skip-permissions"); err != nil {
 		return fmt.Errorf("sending command: %w", err)
 	}
 
-	fmt.Printf("%s Mayor session started. Attach with: %s\n",
-		style.Bold.Render("✓"),
-		style.Dim.Render("gt mayor attach"))
+	// Prime after a delay
+	if err := t.SendKeysDelayed(MayorSessionName, "gt prime", 2000); err != nil {
+		fmt.Printf("Warning: Could not send prime command: %v\n", err)
+	}
 
 	return nil
 }
@@ -157,17 +170,45 @@ func runMayorAttach(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("checking session: %w", err)
 	}
 	if !running {
-		return errors.New("Mayor session is not running. Start with: gt mayor start")
+		// Auto-start if not running
+		fmt.Println("Mayor session not running, starting...")
+		if err := startMayorSession(t); err != nil {
+			return err
+		}
+	} else {
+		// Session exists - check if Claude is still running
+		paneCmd, err := t.GetPaneCommand(MayorSessionName)
+		if err == nil && isMayorShellCommand(paneCmd) {
+			// Claude has exited, restart it
+			fmt.Println("Claude exited, restarting...")
+			if err := t.SendKeys(MayorSessionName, "claude --dangerously-skip-permissions"); err != nil {
+				return fmt.Errorf("restarting claude: %w", err)
+			}
+			// Prime after restart
+			if err := t.SendKeysDelayed(MayorSessionName, "gt prime", 2000); err != nil {
+				fmt.Printf("Warning: Could not send prime command: %v\n", err)
+			}
+		}
 	}
 
 	// Use exec to replace current process with tmux attach
-	// This is the standard pattern for attaching to tmux sessions
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
 		return fmt.Errorf("tmux not found: %w", err)
 	}
 
 	return execCommand(tmuxPath, "attach-session", "-t", MayorSessionName)
+}
+
+// isMayorShellCommand checks if the command is a shell (meaning Claude has exited).
+func isMayorShellCommand(cmd string) bool {
+	shells := []string{"bash", "zsh", "sh", "fish", "tcsh", "ksh"}
+	for _, shell := range shells {
+		if cmd == shell {
+			return true
+		}
+	}
+	return false
 }
 
 // execCommand replaces the current process with the given command.
