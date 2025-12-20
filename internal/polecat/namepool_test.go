@@ -15,22 +15,22 @@ func TestNamePool_Allocate(t *testing.T) {
 
 	pool := NewNamePool(tmpDir, "testrig")
 
-	// First allocation should be polecat-01
+	// First allocation should be first themed name (furiosa)
 	name, err := pool.Allocate()
 	if err != nil {
 		t.Fatalf("Allocate error: %v", err)
 	}
-	if name != "polecat-01" {
-		t.Errorf("expected polecat-01, got %s", name)
+	if name != "furiosa" {
+		t.Errorf("expected furiosa, got %s", name)
 	}
 
-	// Second allocation should be polecat-02
+	// Second allocation should be nux
 	name, err = pool.Allocate()
 	if err != nil {
 		t.Fatalf("Allocate error: %v", err)
 	}
-	if name != "polecat-02" {
-		t.Errorf("expected polecat-02, got %s", name)
+	if name != "nux" {
+		t.Errorf("expected nux, got %s", name)
 	}
 }
 
@@ -47,21 +47,21 @@ func TestNamePool_Release(t *testing.T) {
 	name1, _ := pool.Allocate()
 	name2, _ := pool.Allocate()
 
-	if name1 != "polecat-01" || name2 != "polecat-02" {
+	if name1 != "furiosa" || name2 != "nux" {
 		t.Fatalf("unexpected allocations: %s, %s", name1, name2)
 	}
 
 	// Release first one
-	pool.Release("polecat-01")
+	pool.Release("furiosa")
 
-	// Next allocation should reuse polecat-01
+	// Next allocation should reuse furiosa
 	name, _ := pool.Allocate()
-	if name != "polecat-01" {
-		t.Errorf("expected polecat-01 to be reused, got %s", name)
+	if name != "furiosa" {
+		t.Errorf("expected furiosa to be reused, got %s", name)
 	}
 }
 
-func TestNamePool_PrefersLowNumbers(t *testing.T) {
+func TestNamePool_PrefersOrder(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "namepool-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -75,20 +75,20 @@ func TestNamePool_PrefersLowNumbers(t *testing.T) {
 		pool.Allocate()
 	}
 
-	// Release 03 and 01
-	pool.Release("polecat-03")
-	pool.Release("polecat-01")
+	// Release slit and furiosa
+	pool.Release("slit")
+	pool.Release("furiosa")
 
-	// Next allocation should be 01 (lowest available)
+	// Next allocation should be furiosa (first in theme order)
 	name, _ := pool.Allocate()
-	if name != "polecat-01" {
-		t.Errorf("expected polecat-01 (lowest), got %s", name)
+	if name != "furiosa" {
+		t.Errorf("expected furiosa (first in order), got %s", name)
 	}
 
-	// Next should be 03
+	// Next should be slit
 	name, _ = pool.Allocate()
-	if name != "polecat-03" {
-		t.Errorf("expected polecat-03, got %s", name)
+	if name != "slit" {
+		t.Errorf("expected slit, got %s", name)
 	}
 }
 
@@ -99,10 +99,10 @@ func TestNamePool_Overflow(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	pool := NewNamePool(tmpDir, "gastown")
+	pool := NewNamePoolWithConfig(tmpDir, "gastown", "mad-max", nil, 5)
 
-	// Exhaust the pool
-	for i := 0; i < PoolSize; i++ {
+	// Exhaust the small pool
+	for i := 0; i < 5; i++ {
 		pool.Allocate()
 	}
 
@@ -111,15 +111,15 @@ func TestNamePool_Overflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Allocate error: %v", err)
 	}
-	expected := "gastown-51"
+	expected := "gastown-6"
 	if name != expected {
 		t.Errorf("expected overflow name %s, got %s", expected, name)
 	}
 
 	// Next overflow
 	name, _ = pool.Allocate()
-	if name != "gastown-52" {
-		t.Errorf("expected gastown-52, got %s", name)
+	if name != "gastown-7" {
+		t.Errorf("expected gastown-7, got %s", name)
 	}
 }
 
@@ -130,26 +130,26 @@ func TestNamePool_OverflowNotReusable(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	pool := NewNamePool(tmpDir, "gastown")
+	pool := NewNamePoolWithConfig(tmpDir, "gastown", "mad-max", nil, 3)
 
 	// Exhaust the pool
-	for i := 0; i < PoolSize; i++ {
+	for i := 0; i < 3; i++ {
 		pool.Allocate()
 	}
 
 	// Get overflow name
 	overflow1, _ := pool.Allocate()
-	if overflow1 != "gastown-51" {
-		t.Fatalf("expected gastown-51, got %s", overflow1)
+	if overflow1 != "gastown-4" {
+		t.Fatalf("expected gastown-4, got %s", overflow1)
 	}
 
 	// Release it - should not be reused
 	pool.Release(overflow1)
 
-	// Next allocation should be gastown-52, not gastown-51
+	// Next allocation should be gastown-5, not gastown-4
 	name, _ := pool.Allocate()
-	if name != "gastown-52" {
-		t.Errorf("expected gastown-52 (overflow increments), got %s", name)
+	if name != "gastown-5" {
+		t.Errorf("expected gastown-5 (overflow increments), got %s", name)
 	}
 }
 
@@ -163,10 +163,10 @@ func TestNamePool_SaveLoad(t *testing.T) {
 	pool := NewNamePool(tmpDir, "testrig")
 
 	// Allocate some names
-	pool.Allocate() // 01
-	pool.Allocate() // 02
-	pool.Allocate() // 03
-	pool.Release("polecat-02")
+	pool.Allocate() // furiosa
+	pool.Allocate() // nux
+	pool.Allocate() // slit
+	pool.Release("nux")
 
 	// Save state
 	if err := pool.Save(); err != nil {
@@ -179,15 +179,15 @@ func TestNamePool_SaveLoad(t *testing.T) {
 		t.Fatalf("Load error: %v", err)
 	}
 
-	// Should have 01 and 03 in use
+	// Should have furiosa and slit in use
 	if pool2.ActiveCount() != 2 {
 		t.Errorf("expected 2 active, got %d", pool2.ActiveCount())
 	}
 
-	// Next allocation should be 02 (released slot)
+	// Next allocation should be nux (released slot)
 	name, _ := pool2.Allocate()
-	if name != "polecat-02" {
-		t.Errorf("expected polecat-02, got %s", name)
+	if name != "nux" {
+		t.Errorf("expected nux, got %s", name)
 	}
 }
 
@@ -201,7 +201,7 @@ func TestNamePool_Reconcile(t *testing.T) {
 	pool := NewNamePool(tmpDir, "testrig")
 
 	// Simulate existing polecats from filesystem
-	existing := []string{"polecat-03", "polecat-07", "some-other-name"}
+	existing := []string{"slit", "valkyrie", "some-other-name"}
 
 	pool.Reconcile(existing)
 
@@ -209,10 +209,10 @@ func TestNamePool_Reconcile(t *testing.T) {
 		t.Errorf("expected 2 active after reconcile, got %d", pool.ActiveCount())
 	}
 
-	// Should allocate 01 first (not 03 or 07)
+	// Should allocate furiosa first (not slit or valkyrie)
 	name, _ := pool.Allocate()
-	if name != "polecat-01" {
-		t.Errorf("expected polecat-01, got %s", name)
+	if name != "furiosa" {
+		t.Errorf("expected furiosa, got %s", name)
 	}
 }
 
@@ -229,13 +229,12 @@ func TestNamePool_IsPoolName(t *testing.T) {
 		name     string
 		expected bool
 	}{
-		{"polecat-01", true},
-		{"polecat-50", true},
-		{"polecat-51", false}, // > PoolSize
+		{"furiosa", true},
+		{"nux", true},
+		{"max", true},
 		{"gastown-51", false}, // overflow format
-		{"Nux", false},        // legacy name
-		{"polecat-", false},   // invalid
-		{"polecat-abc", false},
+		{"random-name", false},
+		{"polecat-01", false}, // old format
 	}
 
 	for _, tc := range tests {
@@ -255,17 +254,18 @@ func TestNamePool_ActiveNames(t *testing.T) {
 
 	pool := NewNamePool(tmpDir, "testrig")
 
-	pool.Allocate() // 01
-	pool.Allocate() // 02
-	pool.Allocate() // 03
-	pool.Release("polecat-02")
+	pool.Allocate() // furiosa
+	pool.Allocate() // nux
+	pool.Allocate() // slit
+	pool.Release("nux")
 
 	names := pool.ActiveNames()
 	if len(names) != 2 {
 		t.Errorf("expected 2 active names, got %d", len(names))
 	}
-	if names[0] != "polecat-01" || names[1] != "polecat-03" {
-		t.Errorf("expected [polecat-01, polecat-03], got %v", names)
+	// Names are sorted
+	if names[0] != "furiosa" || names[1] != "slit" {
+		t.Errorf("expected [furiosa, slit], got %v", names)
 	}
 }
 
@@ -279,17 +279,17 @@ func TestNamePool_MarkInUse(t *testing.T) {
 	pool := NewNamePool(tmpDir, "testrig")
 
 	// Mark some slots as in use
-	pool.MarkInUse("polecat-05")
-	pool.MarkInUse("polecat-10")
+	pool.MarkInUse("dementus")
+	pool.MarkInUse("valkyrie")
 
 	// Allocate should skip those
 	name, _ := pool.Allocate()
-	if name != "polecat-01" {
-		t.Errorf("expected polecat-01, got %s", name)
+	if name != "furiosa" {
+		t.Errorf("expected furiosa, got %s", name)
 	}
 
-	// Mark more and verify count
-	if pool.ActiveCount() != 3 { // 01, 05, 10
+	// Verify count
+	if pool.ActiveCount() != 3 { // furiosa, dementus, valkyrie
 		t.Errorf("expected 3 active, got %d", pool.ActiveCount())
 	}
 }
@@ -311,5 +311,122 @@ func TestNamePool_StateFilePath(t *testing.T) {
 	expectedPath := filepath.Join(tmpDir, ".gastown", "namepool.json")
 	if _, err := os.Stat(expectedPath); err != nil {
 		t.Errorf("state file not found at expected path: %v", err)
+	}
+}
+
+func TestNamePool_Themes(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "namepool-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	// Test minerals theme
+	pool := NewNamePoolWithConfig(tmpDir, "testrig", "minerals", nil, 50)
+
+	name, err := pool.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate error: %v", err)
+	}
+	if name != "obsidian" {
+		t.Errorf("expected obsidian (first mineral), got %s", name)
+	}
+
+	// Test theme switching
+	if err := pool.SetTheme("wasteland"); err != nil {
+		t.Fatalf("SetTheme error: %v", err)
+	}
+
+	// obsidian should be released (not in wasteland theme)
+	name, _ = pool.Allocate()
+	if name != "rust" {
+		t.Errorf("expected rust (first wasteland name), got %s", name)
+	}
+}
+
+func TestNamePool_CustomNames(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "namepool-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	custom := []string{"alpha", "beta", "gamma", "delta"}
+	pool := NewNamePoolWithConfig(tmpDir, "testrig", "", custom, 4)
+
+	name, _ := pool.Allocate()
+	if name != "alpha" {
+		t.Errorf("expected alpha, got %s", name)
+	}
+
+	name, _ = pool.Allocate()
+	if name != "beta" {
+		t.Errorf("expected beta, got %s", name)
+	}
+}
+
+func TestListThemes(t *testing.T) {
+	themes := ListThemes()
+	if len(themes) != 3 {
+		t.Errorf("expected 3 themes, got %d", len(themes))
+	}
+
+	// Check that all expected themes are present
+	expected := map[string]bool{"mad-max": true, "minerals": true, "wasteland": true}
+	for _, theme := range themes {
+		if !expected[theme] {
+			t.Errorf("unexpected theme: %s", theme)
+		}
+	}
+}
+
+func TestGetThemeNames(t *testing.T) {
+	names, err := GetThemeNames("mad-max")
+	if err != nil {
+		t.Fatalf("GetThemeNames error: %v", err)
+	}
+	if len(names) != 50 {
+		t.Errorf("expected 50 mad-max names, got %d", len(names))
+	}
+	if names[0] != "furiosa" {
+		t.Errorf("expected first name to be furiosa, got %s", names[0])
+	}
+
+	// Test invalid theme
+	_, err = GetThemeNames("invalid-theme")
+	if err == nil {
+		t.Error("expected error for invalid theme")
+	}
+}
+
+func TestNamePool_Reset(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "namepool-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	pool := NewNamePool(tmpDir, "testrig")
+
+	// Allocate several names
+	for i := 0; i < 10; i++ {
+		pool.Allocate()
+	}
+
+	if pool.ActiveCount() != 10 {
+		t.Errorf("expected 10 active, got %d", pool.ActiveCount())
+	}
+
+	// Reset
+	pool.Reset()
+
+	if pool.ActiveCount() != 0 {
+		t.Errorf("expected 0 active after reset, got %d", pool.ActiveCount())
+	}
+
+	// Should allocate furiosa again
+	name, _ := pool.Allocate()
+	if name != "furiosa" {
+		t.Errorf("expected furiosa after reset, got %s", name)
 	}
 }

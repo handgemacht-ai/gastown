@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 )
@@ -32,8 +33,24 @@ func NewManager(r *rig.Rig, g *git.Git) *Manager {
 	// Use the mayor's rig directory for beads operations (rig-level beads)
 	mayorRigPath := filepath.Join(r.Path, "mayor", "rig")
 
-	// Initialize name pool
-	pool := NewNamePool(r.Path, r.Name)
+	// Try to load rig config for namepool settings
+	rigConfigPath := filepath.Join(r.Path, ".gastown", "config.json")
+	var pool *NamePool
+
+	rigConfig, err := config.LoadRigConfig(rigConfigPath)
+	if err == nil && rigConfig.Namepool != nil {
+		// Use configured namepool settings
+		pool = NewNamePoolWithConfig(
+			r.Path,
+			r.Name,
+			rigConfig.Namepool.Style,
+			rigConfig.Namepool.Names,
+			rigConfig.Namepool.MaxBeforeNumbering,
+		)
+	} else {
+		// Use defaults
+		pool = NewNamePool(r.Path, r.Name)
+	}
 	_ = pool.Load() // Load existing state, ignore errors for new rigs
 
 	return &Manager{

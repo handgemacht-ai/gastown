@@ -10,15 +10,55 @@ import (
 )
 
 const (
-	// PoolSize is the number of reusable names in the pool.
-	PoolSize = 50
+	// DefaultPoolSize is the number of reusable names in the pool.
+	DefaultPoolSize = 50
 
-	// NamePrefix is the prefix for pooled polecat names.
-	NamePrefix = "polecat-"
+	// DefaultTheme is the default theme for new rigs.
+	DefaultTheme = "mad-max"
 )
 
+// Built-in themes with themed polecat names.
+var BuiltinThemes = map[string][]string{
+	"mad-max": {
+		"furiosa", "nux", "slit", "rictus", "dementus",
+		"capable", "toast", "dag", "cheedo", "valkyrie",
+		"keeper", "morsov", "ace", "warboy", "imperator",
+		"organic", "coma", "splendid", "angharad", "max",
+		"immortan", "bullet", "toecutter", "goose", "nightrider",
+		"glory", "scrotus", "chumbucket", "corpus", "dinki",
+		"prime", "vuvalini", "rockryder", "wretched", "buzzard",
+		"gastown", "bullet-farmer", "citadel", "wasteland", "fury",
+		"road-warrior", "interceptor", "blackfinger", "wraith", "witness",
+		"chrome", "shiny", "mediocre", "guzzoline", "aqua-cola",
+	},
+	"minerals": {
+		"obsidian", "quartz", "jasper", "onyx", "opal",
+		"topaz", "garnet", "ruby", "amber", "jade",
+		"pearl", "flint", "granite", "basalt", "marble",
+		"shale", "slate", "pyrite", "mica", "agate",
+		"malachite", "turquoise", "lapis", "emerald", "sapphire",
+		"diamond", "amethyst", "citrine", "zircon", "peridot",
+		"coral", "jet", "moonstone", "sunstone", "bloodstone",
+		"rhodonite", "sodalite", "hematite", "magnetite", "calcite",
+		"fluorite", "selenite", "kyanite", "labradorite", "amazonite",
+		"chalcedony", "carnelian", "aventurine", "chrysoprase", "heliodor",
+	},
+	"wasteland": {
+		"rust", "chrome", "nitro", "guzzle", "witness",
+		"shiny", "fury", "thunder", "dust", "scavenger",
+		"radrat", "ghoul", "mutant", "raider", "vault",
+		"pipboy", "nuka", "brahmin", "deathclaw", "mirelurk",
+		"synth", "institute", "enclave", "brotherhood", "minuteman",
+		"railroad", "atom", "crater", "foundation", "refuge",
+		"settler", "wanderer", "courier", "lone", "chosen",
+		"tribal", "khan", "legion", "ncr", "ranger",
+		"overseer", "sentinel", "paladin", "scribe", "initiate",
+		"elder", "lancer", "knight", "squire", "proctor",
+	},
+}
+
 // NamePool manages a bounded pool of reusable polecat names.
-// Names in the pool are polecat-01 through polecat-50.
+// Names are drawn from a themed pool (mad-max by default).
 // When the pool is exhausted, overflow names use rigname-N format.
 type NamePool struct {
 	mu sync.RWMutex
@@ -26,13 +66,22 @@ type NamePool struct {
 	// RigName is the rig this pool belongs to.
 	RigName string `json:"rig_name"`
 
-	// InUse tracks which pool indices are currently in use.
-	// Key is the pool index (1-50), value is true if in use.
-	InUse map[int]bool `json:"in_use"`
+	// Theme is the current theme name (e.g., "mad-max", "minerals").
+	Theme string `json:"theme"`
+
+	// CustomNames allows overriding the built-in theme names.
+	CustomNames []string `json:"custom_names,omitempty"`
+
+	// InUse tracks which pool names are currently in use.
+	// Key is the name itself, value is true if in use.
+	InUse map[string]bool `json:"in_use"`
 
 	// OverflowNext is the next overflow sequence number.
-	// Starts at PoolSize+1 (51) and increments.
+	// Starts at MaxSize+1 and increments.
 	OverflowNext int `json:"overflow_next"`
+
+	// MaxSize is the maximum number of themed names before overflow.
+	MaxSize int `json:"max_size"`
 
 	// stateFile is the path to persist pool state.
 	stateFile string
@@ -42,10 +91,48 @@ type NamePool struct {
 func NewNamePool(rigPath, rigName string) *NamePool {
 	return &NamePool{
 		RigName:      rigName,
-		InUse:        make(map[int]bool),
-		OverflowNext: PoolSize + 1,
+		Theme:        DefaultTheme,
+		InUse:        make(map[string]bool),
+		OverflowNext: DefaultPoolSize + 1,
+		MaxSize:      DefaultPoolSize,
 		stateFile:    filepath.Join(rigPath, ".gastown", "namepool.json"),
 	}
+}
+
+// NewNamePoolWithConfig creates a name pool with specific configuration.
+func NewNamePoolWithConfig(rigPath, rigName, theme string, customNames []string, maxSize int) *NamePool {
+	if theme == "" {
+		theme = DefaultTheme
+	}
+	if maxSize <= 0 {
+		maxSize = DefaultPoolSize
+	}
+
+	return &NamePool{
+		RigName:      rigName,
+		Theme:        theme,
+		CustomNames:  customNames,
+		InUse:        make(map[string]bool),
+		OverflowNext: maxSize + 1,
+		MaxSize:      maxSize,
+		stateFile:    filepath.Join(rigPath, ".gastown", "namepool.json"),
+	}
+}
+
+// getNames returns the list of names to use for the pool.
+func (p *NamePool) getNames() []string {
+	// Custom names take precedence
+	if len(p.CustomNames) > 0 {
+		return p.CustomNames
+	}
+
+	// Look up built-in theme
+	if names, ok := BuiltinThemes[p.Theme]; ok {
+		return names
+	}
+
+	// Fall back to default theme
+	return BuiltinThemes[DefaultTheme]
 }
 
 // Load loads the pool state from disk.
@@ -57,8 +144,8 @@ func (p *NamePool) Load() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Initialize with empty state
-			p.InUse = make(map[int]bool)
-			p.OverflowNext = PoolSize + 1
+			p.InUse = make(map[string]bool)
+			p.OverflowNext = p.MaxSize + 1
 			return nil
 		}
 		return err
@@ -69,13 +156,24 @@ func (p *NamePool) Load() error {
 		return err
 	}
 
+	// Preserve the theme and custom names if already set
+	if p.Theme == "" && loaded.Theme != "" {
+		p.Theme = loaded.Theme
+	}
+	if len(p.CustomNames) == 0 && len(loaded.CustomNames) > 0 {
+		p.CustomNames = loaded.CustomNames
+	}
+
 	p.InUse = loaded.InUse
 	if p.InUse == nil {
-		p.InUse = make(map[int]bool)
+		p.InUse = make(map[string]bool)
 	}
 	p.OverflowNext = loaded.OverflowNext
-	if p.OverflowNext < PoolSize+1 {
-		p.OverflowNext = PoolSize + 1
+	if p.OverflowNext < p.MaxSize+1 {
+		p.OverflowNext = p.MaxSize + 1
+	}
+	if loaded.MaxSize > 0 {
+		p.MaxSize = loaded.MaxSize
 	}
 
 	return nil
@@ -100,17 +198,20 @@ func (p *NamePool) Save() error {
 }
 
 // Allocate returns a name from the pool.
-// It prefers lower-numbered pool slots, and falls back to overflow names
+// It prefers names in order from the theme list, and falls back to overflow names
 // when the pool is exhausted.
 func (p *NamePool) Allocate() (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Try to find first available slot in pool (prefer low numbers)
-	for i := 1; i <= PoolSize; i++ {
-		if !p.InUse[i] {
-			p.InUse[i] = true
-			return p.formatPoolName(i), nil
+	names := p.getNames()
+
+	// Try to find first available name from the theme
+	for i := 0; i < len(names) && i < p.MaxSize; i++ {
+		name := names[i]
+		if !p.InUse[name] {
+			p.InUse[name] = true
+			return name, nil
 		}
 	}
 
@@ -126,17 +227,27 @@ func (p *NamePool) Release(name string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	idx := p.parsePoolIndex(name)
-	if idx > 0 && idx <= PoolSize {
-		delete(p.InUse, idx)
+	// Check if it's a themed name
+	if p.isThemedName(name) {
+		delete(p.InUse, name)
 	}
 	// Overflow names are not reusable, so we don't track them
 }
 
-// IsPoolName returns true if the name is a pool name (polecat-NN format).
+// isThemedName checks if a name is in the theme pool.
+func (p *NamePool) isThemedName(name string) bool {
+	names := p.getNames()
+	for _, n := range names {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// IsPoolName returns true if the name is a pool name (themed or numbered).
 func (p *NamePool) IsPoolName(name string) bool {
-	idx := p.parsePoolIndex(name)
-	return idx > 0 && idx <= PoolSize
+	return p.isThemedName(name)
 }
 
 // ActiveCount returns the number of names currently in use from the pool.
@@ -152,8 +263,8 @@ func (p *NamePool) ActiveNames() []string {
 	defer p.mu.RUnlock()
 
 	var names []string
-	for idx := range p.InUse {
-		names = append(names, p.formatPoolName(idx))
+	for name := range p.InUse {
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names
@@ -164,9 +275,8 @@ func (p *NamePool) MarkInUse(name string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	idx := p.parsePoolIndex(name)
-	if idx > 0 && idx <= PoolSize {
-		p.InUse[idx] = true
+	if p.isThemedName(name) {
+		p.InUse[name] = true
 	}
 }
 
@@ -177,20 +287,14 @@ func (p *NamePool) Reconcile(existingPolecats []string) {
 	defer p.mu.Unlock()
 
 	// Clear current state
-	p.InUse = make(map[int]bool)
+	p.InUse = make(map[string]bool)
 
 	// Mark all existing polecats as in use
 	for _, name := range existingPolecats {
-		idx := p.parsePoolIndex(name)
-		if idx > 0 && idx <= PoolSize {
-			p.InUse[idx] = true
+		if p.isThemedName(name) {
+			p.InUse[name] = true
 		}
 	}
-}
-
-// formatPoolName formats a pool index as a name.
-func (p *NamePool) formatPoolName(idx int) string {
-	return fmt.Sprintf("%s%02d", NamePrefix, idx)
 }
 
 // formatOverflowName formats an overflow sequence number as a name.
@@ -198,20 +302,78 @@ func (p *NamePool) formatOverflowName(seq int) string {
 	return fmt.Sprintf("%s-%d", p.RigName, seq)
 }
 
-// parsePoolIndex extracts the pool index from a pool name.
-// Returns 0 if not a valid pool name.
-func (p *NamePool) parsePoolIndex(name string) int {
-	if len(name) < len(NamePrefix)+2 {
-		return 0
-	}
-	if name[:len(NamePrefix)] != NamePrefix {
-		return 0
+// GetTheme returns the current theme name.
+func (p *NamePool) GetTheme() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Theme
+}
+
+// SetTheme sets the theme and resets the pool.
+// Existing in-use names are preserved if they exist in the new theme.
+func (p *NamePool) SetTheme(theme string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, ok := BuiltinThemes[theme]; !ok {
+		return fmt.Errorf("unknown theme: %s (available: mad-max, minerals, wasteland)", theme)
 	}
 
-	var idx int
-	_, err := fmt.Sscanf(name[len(NamePrefix):], "%d", &idx)
-	if err != nil {
-		return 0
+	// Preserve names that exist in both themes
+	newNames := BuiltinThemes[theme]
+	newInUse := make(map[string]bool)
+	for name := range p.InUse {
+		for _, n := range newNames {
+			if n == name {
+				newInUse[name] = true
+				break
+			}
+		}
 	}
-	return idx
+
+	p.Theme = theme
+	p.InUse = newInUse
+	p.CustomNames = nil
+	return nil
+}
+
+// ListThemes returns the list of available built-in themes.
+func ListThemes() []string {
+	themes := make([]string, 0, len(BuiltinThemes))
+	for theme := range BuiltinThemes {
+		themes = append(themes, theme)
+	}
+	sort.Strings(themes)
+	return themes
+}
+
+// GetThemeNames returns the names in a specific theme.
+func GetThemeNames(theme string) ([]string, error) {
+	if names, ok := BuiltinThemes[theme]; ok {
+		return names, nil
+	}
+	return nil, fmt.Errorf("unknown theme: %s", theme)
+}
+
+// AddCustomName adds a custom name to the pool.
+func (p *NamePool) AddCustomName(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Check if already in custom names
+	for _, n := range p.CustomNames {
+		if n == name {
+			return
+		}
+	}
+	p.CustomNames = append(p.CustomNames, name)
+}
+
+// Reset clears the pool state, releasing all names.
+func (p *NamePool) Reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.InUse = make(map[string]bool)
+	p.OverflowNext = p.MaxSize + 1
 }
