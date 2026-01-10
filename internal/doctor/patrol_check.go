@@ -28,6 +28,7 @@ func NewPatrolMoleculesExistCheck() *PatrolMoleculesExistCheck {
 			BaseCheck: BaseCheck{
 				CheckName:        "patrol-molecules-exist",
 				CheckDescription: "Check if patrol molecules exist for each rig",
+				CheckCategory:    CategoryPatrol,
 			},
 		},
 	}
@@ -155,6 +156,7 @@ func NewPatrolHooksWiredCheck() *PatrolHooksWiredCheck {
 			BaseCheck: BaseCheck{
 				CheckName:        "patrol-hooks-wired",
 				CheckDescription: "Check if hooks trigger patrol execution",
+				CheckCategory:    CategoryPatrol,
 			},
 		},
 	}
@@ -225,6 +227,7 @@ func NewPatrolNotStuckCheck() *PatrolNotStuckCheck {
 		BaseCheck: BaseCheck{
 			CheckName:        "patrol-not-stuck",
 			CheckDescription: "Check for stuck patrol wisps (>1h in_progress)",
+			CheckCategory:    CategoryPatrol,
 		},
 		stuckThreshold: 1 * time.Hour,
 	}
@@ -329,6 +332,7 @@ func NewPatrolPluginsAccessibleCheck() *PatrolPluginsAccessibleCheck {
 			BaseCheck: BaseCheck{
 				CheckName:        "patrol-plugins-accessible",
 				CheckDescription: "Check if plugin directories exist and are readable",
+				CheckCategory:    CategoryPatrol,
 			},
 		},
 	}
@@ -398,6 +402,7 @@ func NewPatrolRolesHavePromptsCheck() *PatrolRolesHavePromptsCheck {
 			BaseCheck: BaseCheck{
 				CheckName:        "patrol-roles-have-prompts",
 				CheckDescription: "Check if internal/templates/roles/*.md.tmpl exist for each patrol role",
+				CheckCategory:    CategoryPatrol,
 			},
 		},
 	}
