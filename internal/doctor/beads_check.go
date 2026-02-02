@@ -661,8 +661,8 @@ func (c *DatabasePrefixCheck) Run(ctx *CheckContext) *CheckResult {
 			continue // No beads dir for this rig
 		}
 
-		// Query database for issue_prefix by running bd from the rig directory
-		dbPrefix, err := c.getDBPrefix(rigPath)
+		// Query database for issue_prefix by running bd from the beads dir parent
+		dbPrefix, err := c.getDBPrefix(rigBeadsDir)
 		if err != nil {
 			// No issue_prefix configured - that's OK
 			continue
@@ -703,10 +703,13 @@ func (c *DatabasePrefixCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // getDBPrefix queries the database for issue_prefix config value.
-// Runs bd from the rig directory so it discovers the correct database.
-func (c *DatabasePrefixCheck) getDBPrefix(rigPath string) (string, error) {
+// Uses cd into the parent directory of beadsDir so bd auto-discovers
+// the .beads directory correctly (--db passes a file path which breaks
+// beadsDir resolution in server mode).
+func (c *DatabasePrefixCheck) getDBPrefix(beadsDir string) (string, error) {
+	workDir := filepath.Dir(beadsDir) // .beads -> parent dir
 	cmd := exec.Command("bd", "config", "get", "issue_prefix")
-	cmd.Dir = rigPath
+	cmd.Dir = workDir
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
