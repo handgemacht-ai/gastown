@@ -705,8 +705,13 @@ func (c *DatabasePrefixCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // getDBPrefix queries the database for issue_prefix config value.
+// Uses cd into the parent directory of beadsDir so bd auto-discovers
+// the .beads directory correctly (--db passes a file path which breaks
+// beadsDir resolution in server mode).
 func (c *DatabasePrefixCheck) getDBPrefix(beadsDir string) (string, error) {
-	cmd := exec.Command("bd", "config", "get", "issue_prefix", "--db", beadsDir)
+	workDir := filepath.Dir(beadsDir) // .beads -> parent dir
+	cmd := exec.Command("bd", "config", "get", "issue_prefix")
+	cmd.Dir = workDir
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
