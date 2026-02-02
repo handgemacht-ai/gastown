@@ -110,12 +110,14 @@ func (c *RoutesCheck) Run(ctx *CheckContext) *CheckResult {
 	var invalidRoutes []string
 
 	// Check each rig has a route (by path, not just prefix from rigs.json)
+	// Routes may point to either "<rig>/mayor/rig" (when source repo has .beads/ tracked)
+	// or just "<rig>" (when beads was initialized at rig root). Check both.
 	for rigName, rigEntry := range rigsConfig.Rigs {
-		expectedPath := rigName + "/mayor/rig"
-
-		// Check if there's already a route for this rig (by path)
-		if _, hasRoute := routeByPath[expectedPath]; hasRoute {
-			// Rig already has a route, even if prefix differs from rigs.json
+		// Check if there's already a route for this rig (by either path form)
+		if _, hasRoute := routeByPath[rigName+"/mayor/rig"]; hasRoute {
+			continue
+		}
+		if _, hasRoute := routeByPath[rigName]; hasRoute {
 			continue
 		}
 
@@ -286,12 +288,19 @@ func (c *RoutesCheck) Fix(ctx *CheckContext) error {
 		}
 
 		if prefix != "" && !routeMap[prefix] {
-			// Verify the rig path exists before adding
-			rigPath := filepath.Join(ctx.TownRoot, rigName, "mayor", "rig")
+			// Use same conditional logic as rig add: route to mayor/rig if it
+			// has a .beads/ directory with a database, otherwise route to rig root.
+			routePath := rigName
+			mayorRigBeads := filepath.Join(ctx.TownRoot, rigName, "mayor", "rig", ".beads")
+			if _, err := os.Stat(mayorRigBeads); err == nil {
+				routePath = rigName + "/mayor/rig"
+			}
+
+			rigPath := filepath.Join(ctx.TownRoot, routePath)
 			if _, err := os.Stat(rigPath); err == nil {
 				route := beads.Route{
 					Prefix: prefix,
-					Path:   rigName + "/mayor/rig",
+					Path:   routePath,
 				}
 				routes = append(routes, route)
 				routeMap[prefix] = true
