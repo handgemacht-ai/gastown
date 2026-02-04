@@ -68,6 +68,10 @@ const (
 	TypeMerged       = "merged"
 	TypeMergeFailed  = "merge_failed"
 	TypeMergeSkipped = "merge_skipped"
+
+	// GitHub PR events (emitted by gt done / refinery)
+	TypePRCreated = "pr_created"
+	TypePRFailed  = "pr_failed"
 )
 
 // EventsFile is the name of the raw events log.
@@ -211,6 +215,29 @@ func MergePayload(mrID, worker, branch, reason string) map[string]interface{} {
 		p["reason"] = reason
 	}
 	return p
+}
+
+// PRCreatedPayload creates a payload for pr_created events.
+func PRCreatedPayload(branch, target, issueID, rig string, prNumber int, prURL string) map[string]interface{} {
+	return map[string]interface{}{
+		"branch":    branch,
+		"target":    target,
+		"issue":     issueID,
+		"rig":       rig,
+		"pr_number": prNumber,
+		"pr_url":    prURL,
+	}
+}
+
+// PRFailedPayload creates a payload for pr_failed events.
+func PRFailedPayload(branch, target, issueID, rig, errMsg string) map[string]interface{} {
+	return map[string]interface{}{
+		"branch": branch,
+		"target": target,
+		"issue":  issueID,
+		"rig":    rig,
+		"error":  errMsg,
+	}
 }
 
 // PatrolPayload creates a payload for patrol start/complete events.

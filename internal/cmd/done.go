@@ -356,9 +356,13 @@ func runDone(cmd *cobra.Command, args []string) error {
 		if prErr != nil {
 			// Non-fatal: refinery can still create PR if this fails
 			style.PrintWarning("could not create GitHub PR: %v", prErr)
+			_ = events.LogAudit(events.TypePRFailed, sender,
+				events.PRFailedPayload(branch, target, issueID, rigName, prErr.Error()))
 		} else if prNumber > 0 {
 			fmt.Printf("%s GitHub PR created: #%d\n", style.Bold.Render("✓"), prNumber)
 			fmt.Printf("  %s\n", prURL)
+			_ = events.LogFeed(events.TypePRCreated, sender,
+				events.PRCreatedPayload(branch, target, issueID, rigName, prNumber, prURL))
 		}
 
 		// Get source issue for priority inheritance
@@ -862,7 +866,7 @@ func createGitHubPR(g *git.Git, branch, target, issueID, rigName string) (int, s
 	// Check if a PR already exists for this branch
 	listCmd := exec.Command("gh", "pr", "list", "--head", branch, "--json", "number,url", "--limit", "1")
 	listCmd.Dir = g.WorkDir()
-	listOut, err := listCmd.Output()
+	listOut, err := listCmd.CombinedOutput()
 	if err == nil && len(listOut) > 0 {
 		var existing []struct {
 			Number int    `json:"number"`
@@ -894,9 +898,9 @@ func createGitHubPR(g *git.Git, branch, target, issueID, rigName string) (int, s
 		"--json", "number,url",
 	)
 	createCmd.Dir = g.WorkDir()
-	createOut, err := createCmd.Output()
+	createOut, err := createCmd.CombinedOutput()
 	if err != nil {
-		return 0, "", fmt.Errorf("gh pr create: %w", err)
+		return 0, "", fmt.Errorf("gh pr create: %s", strings.TrimSpace(string(createOut)))
 	}
 
 	var result struct {

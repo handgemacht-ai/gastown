@@ -343,7 +343,7 @@ func (e *Engineer) findOrCreatePR(branch, target, sourceIssue string) (int, stri
 	// Check for existing PR
 	listCmd := exec.Command("gh", "pr", "list", "--head", branch, "--json", "number,url", "--limit", "1")
 	listCmd.Dir = e.workDir
-	listOut, err := listCmd.Output()
+	listOut, err := listCmd.CombinedOutput()
 	if err == nil && len(listOut) > 0 {
 		var existing []struct {
 			Number int    `json:"number"`
@@ -371,9 +371,9 @@ func (e *Engineer) findOrCreatePR(branch, target, sourceIssue string) (int, stri
 		"--json", "number,url",
 	)
 	createCmd.Dir = e.workDir
-	createOut, err := createCmd.Output()
+	createOut, err := createCmd.CombinedOutput()
 	if err != nil {
-		return 0, "", fmt.Errorf("gh pr create: %w", err)
+		return 0, "", fmt.Errorf("gh pr create: %s", strings.TrimSpace(string(createOut)))
 	}
 
 	var result struct {
