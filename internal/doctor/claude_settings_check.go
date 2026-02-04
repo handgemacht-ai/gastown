@@ -10,11 +10,8 @@ import (
 
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/runtime"
-	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/templates"
 	"github.com/steveyegge/gastown/internal/tmux"
-	"github.com/steveyegge/gastown/internal/workspace"
 )
 
 // gitFileStatus represents the git status of a file.
@@ -148,21 +145,9 @@ func (c *ClaudeSettingsCheck) findSettingsFiles(townRoot string) []staleSettings
 		})
 	}
 
-	// Check for STALE CLAUDE.md at town root (~/gt/CLAUDE.md)
-	// This is WRONG if it contains Mayor-specific instructions that would be inherited
-	// by ALL agents via directory traversal. However, a short identity anchor file
-	// (created by priming) that just says "run gt prime" is intentional and safe.
-	staleTownRootCLAUDEmd := filepath.Join(townRoot, "CLAUDE.md")
-	if fileExists(staleTownRootCLAUDEmd) && !isIdentityAnchor(staleTownRootCLAUDEmd) {
-		files = append(files, staleSettingsInfo{
-			path:          staleTownRootCLAUDEmd,
-			agentType:     "mayor",
-			sessionName:   "hq-mayor",
-			wrongLocation: true,
-			gitStatus:     c.getGitFileStatus(staleTownRootCLAUDEmd),
-			missing:       []string{"should be at mayor/CLAUDE.md, not town root"},
-		})
-	}
+	// NOTE: Town-root CLAUDE.md is now managed by the priming check as an
+	// "identity anchor" (prevents identity drift after compaction, since Claude
+	// Code rebases CWD to git root). Do NOT flag it as wrong-location here.
 
 	// Town-level: mayor (~/gt/mayor/.claude/settings.json) - CORRECT location
 	mayorSettings := filepath.Join(townRoot, "mayor", ".claude", "settings.json")
@@ -480,19 +465,8 @@ func (c *ClaudeSettingsCheck) Fix(ctx *CheckContext) error {
 				}
 			}
 
-			// For mayor CLAUDE.md at town root, create at mayor/
-			if sf.agentType == "mayor" && strings.HasSuffix(sf.path, "CLAUDE.md") && !strings.Contains(sf.path, "/mayor/") {
-				townName, _ := workspace.GetTownName(ctx.TownRoot)
-				if _, err := templates.CreateMayorCLAUDEmd(
-					mayorDir,
-					ctx.TownRoot,
-					townName,
-					session.MayorSessionName(),
-					session.DeaconSessionName(),
-				); err != nil {
-					errors = append(errors, fmt.Sprintf("failed to create mayor/CLAUDE.md: %v", err))
-				}
-			}
+			// NOTE: Town-root CLAUDE.md is now managed by the priming check
+			// as an identity anchor. No migration needed.
 
 			// Town-root files were inherited by ALL agents via directory traversal.
 			// Warn user to restart agents - don't auto-kill sessions as that's too disruptive,
