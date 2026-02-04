@@ -232,40 +232,29 @@ NEVER use `git branch -r | grep polecat` or `git ls-remote | grep polecat` - the
 MRs that are tracked in beads but not yet pushed, causing work to pile up.
 If queue empty, skip to context-check step.
 
-**process-branch**: Pick next branch, rebase on main
+**process-branch**: Pick next MR, check its GitHub PR
 ```bash
-git checkout -b temp polecat/<worker>    # Local branch (shared via .repo.git)
-git rebase origin/{{ .DefaultBranch }}
-```
-If conflicts unresolvable: notify polecat, skip to loop-check.
-
-**run-tests**: Run the test suite
-```bash
-go test ./...
+# MR bead has pr_number field from gt done
+gh pr checks <pr_number> --watch    # Wait for CI
+# If CI green:
+gh pr merge <pr_number> --squash --delete-branch
+git pull origin {{ .DefaultBranch }}
 ```
 
 **handle-failures**: **VERIFICATION GATE**
 ```
-Tests PASSED → Gate auto-satisfied, proceed to merge
+CI PASSED → Gate auto-satisfied, PR merged
 
-Tests FAILED:
-├── Branch caused it? → Abort, notify polecat, skip branch
-└── Pre-existing? → MUST do ONE of:
-    ├── Fix it yourself (you're the Engineer!)
-    └── File bead: bd create --type=bug --priority=1 --title="..."
+CI FAILED:
+├── Check which checks failed: gh pr checks <number>
+├── Create conflict resolution task for polecat to fix
+└── Skip to next MR
 
-GATE: Cannot proceed to merge without fix OR bead filed
+MERGE CONFLICT (GitHub reports not mergeable):
+├── Create conflict resolution task
+└── Polecat rebases, force-pushes → CI reruns automatically
 ```
 **FORBIDDEN**: Note failure and merge without tracking.
-
-**merge-push**: Merge to main and push immediately
-```bash
-git checkout {{ .DefaultBranch }}
-git merge --ff-only temp
-git push origin {{ .DefaultBranch }}
-git branch -d temp
-git branch -d polecat/<worker>           # Delete local polecat branch
-```
 
 **loop-check**: More branches? Return to process-branch.
 

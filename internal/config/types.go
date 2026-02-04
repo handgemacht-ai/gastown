@@ -716,6 +716,12 @@ type MergeQueueConfig struct {
 
 	// MaxConcurrent is the maximum number of concurrent merges.
 	MaxConcurrent int `json:"max_concurrent"`
+
+	// PRChecksTimeout is max wait for CI checks (e.g., "15m"). Default: "15m".
+	PRChecksTimeout string `json:"pr_checks_timeout,omitempty"`
+
+	// PRMergeMethod is "squash" (default), "merge", or "rebase".
+	PRMergeMethod string `json:"pr_merge_method,omitempty"`
 }
 
 // OnConflict strategy constants.

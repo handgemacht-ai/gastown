@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -349,6 +351,16 @@ func runDone(cmd *cobra.Command, args []string) error {
 			target = autoTarget
 		}
 
+		// After push succeeds and target is known, create GitHub PR
+		prNumber, prURL, prErr := createGitHubPR(g, branch, target, issueID, rigName)
+		if prErr != nil {
+			// Non-fatal: refinery can still create PR if this fails
+			style.PrintWarning("could not create GitHub PR: %v", prErr)
+		} else if prNumber > 0 {
+			fmt.Printf("%s GitHub PR created: #%d\n", style.Bold.Render("✓"), prNumber)
+			fmt.Printf("  %s\n", prURL)
+		}
+
 		// Get source issue for priority inheritance
 		var priority int
 		if donePriority >= 0 {
@@ -391,6 +403,12 @@ func runDone(cmd *cobra.Command, args []string) error {
 			description += "\nretry_count: 0"
 			description += "\nlast_conflict_sha: null"
 			description += "\nconflict_task_id: null"
+
+			// Add GitHub PR tracking fields (if PR was created)
+			if prNumber > 0 {
+				description += fmt.Sprintf("\npr_number: %d", prNumber)
+				description += fmt.Sprintf("\npr_url: %s", prURL)
+			}
 
 			// Create MR bead (ephemeral wisp - will be cleaned up after merge)
 			mrIssue, err := bd.Create(beads.CreateOptions{
@@ -830,4 +848,64 @@ func selfKillSession(townRoot string, roleInfo RoleInfo) error {
 	}
 
 	return nil
+}
+
+// createGitHubPR creates a GitHub PR for the given branch using the gh CLI.
+// If a PR already exists for the branch, it reuses it.
+// Returns (prNumber, prURL, error). prNumber=0 means no PR was created.
+func createGitHubPR(g *git.Git, branch, target, issueID, rigName string) (int, string, error) {
+	// Check if gh CLI is available
+	if _, err := exec.LookPath("gh"); err != nil {
+		return 0, "", fmt.Errorf("gh CLI not found: %w", err)
+	}
+
+	// Check if a PR already exists for this branch
+	listCmd := exec.Command("gh", "pr", "list", "--head", branch, "--json", "number,url", "--limit", "1")
+	listCmd.Dir = g.WorkDir()
+	listOut, err := listCmd.Output()
+	if err == nil && len(listOut) > 0 {
+		var existing []struct {
+			Number int    `json:"number"`
+			URL    string `json:"url"`
+		}
+		if err := json.Unmarshal(listOut, &existing); err == nil && len(existing) > 0 {
+			return existing[0].Number, existing[0].URL, nil
+		}
+	}
+
+	// Build PR title from issue ID
+	title := fmt.Sprintf("Merge: %s", issueID)
+	if issueID == "" {
+		title = fmt.Sprintf("Merge: %s", branch)
+	}
+
+	// Build PR body
+	body := fmt.Sprintf("Automated PR from `gt done`\n\nBranch: `%s`\nRig: `%s`", branch, rigName)
+	if issueID != "" {
+		body += fmt.Sprintf("\nIssue: `%s`", issueID)
+	}
+
+	// Create the PR
+	createCmd := exec.Command("gh", "pr", "create",
+		"--base", target,
+		"--head", branch,
+		"--title", title,
+		"--body", body,
+		"--json", "number,url",
+	)
+	createCmd.Dir = g.WorkDir()
+	createOut, err := createCmd.Output()
+	if err != nil {
+		return 0, "", fmt.Errorf("gh pr create: %w", err)
+	}
+
+	var result struct {
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+	}
+	if err := json.Unmarshal(createOut, &result); err != nil {
+		return 0, "", fmt.Errorf("parsing gh pr create output: %w", err)
+	}
+
+	return result.Number, result.URL, nil
 }
