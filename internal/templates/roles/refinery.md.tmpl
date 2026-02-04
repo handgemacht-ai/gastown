@@ -239,7 +239,11 @@ gh pr checks <pr_number> --watch    # Wait for CI
 # If CI green:
 gh pr merge <pr_number> --squash --delete-branch
 git pull origin {{ .DefaultBranch }}
+# After successful merge, close the MR bead and its source issue:
+gt mq close {{ .RigName }} <mr-id> --reason=merged
 ```
+⚠️ **POST-MERGE**: Always run `gt mq close` after a successful merge. This closes
+the MR bead AND its source issue automatically. Do NOT use `gt done` — that is polecat-only.
 
 **handle-failures**: **VERIFICATION GATE**
 ```

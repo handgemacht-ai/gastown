@@ -292,6 +292,10 @@ func init() {
 	mqRejectCmd.Flags().BoolVar(&mqRejectNotify, "notify", false, "Send mail notification to worker")
 	_ = mqRejectCmd.MarkFlagRequired("reason") // cobra flags: error only at runtime if missing
 
+	// Close flags
+	mqCloseCmd.Flags().StringVarP(&mqCloseReason, "reason", "r", "merged", "Reason for closing")
+	mqCloseCmd.Flags().BoolVar(&mqCloseCloseSource, "close-source", true, "Also close the source issue")
+
 	// Status flags
 	mqStatusCmd.Flags().BoolVar(&mqStatusJSON, "json", false, "Output as JSON")
 
@@ -300,6 +304,7 @@ func init() {
 	mqCmd.AddCommand(mqRetryCmd)
 	mqCmd.AddCommand(mqListCmd)
 	mqCmd.AddCommand(mqRejectCmd)
+	mqCmd.AddCommand(mqCloseCmd)
 	mqCmd.AddCommand(mqStatusCmd)
 
 	// Integration branch subcommands
