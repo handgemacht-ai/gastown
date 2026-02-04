@@ -601,6 +601,42 @@ func (m *Manager) RejectMR(idOrBranch string, reason string, notify bool) (*Merg
 	return mr, nil
 }
 
+// CloseMR closes a merge request with a reason (typically "merged").
+// If closeSource is true and the MR has a source issue, it closes that too.
+// Returns the closed MR for display purposes.
+func (m *Manager) CloseMR(idOrBranch string, reason string, closeSource bool) (*MergeRequest, error) {
+	mr, err := m.FindMR(idOrBranch)
+	if err != nil {
+		return nil, err
+	}
+
+	if mr.IsClosed() {
+		return nil, fmt.Errorf("%w: MR is already closed with reason: %s", ErrClosedImmutable, mr.CloseReason)
+	}
+
+	b := beads.New(m.rig.BeadsPath())
+
+	// Close the MR bead
+	if err := b.CloseWithReason(reason, mr.ID); err != nil {
+		return nil, fmt.Errorf("failed to close MR bead: %w", err)
+	}
+
+	// Optionally close the source issue
+	if closeSource && mr.IssueID != "" {
+		closeReason := fmt.Sprintf("Merged in %s", mr.ID)
+		if err := b.CloseWithReason(closeReason, mr.IssueID); err != nil {
+			_, _ = fmt.Fprintf(m.output, "Warning: failed to close source issue %s: %v\n", mr.IssueID, err)
+		}
+	}
+
+	// Update in-memory state
+	if err := mr.Close(CloseReasonMerged); err != nil {
+		_, _ = fmt.Fprintf(m.output, "Warning: failed to update MR state: %v\n", err)
+	}
+
+	return mr, nil
+}
+
 // notifyWorkerRejected sends a rejection notification to a polecat.
 func (m *Manager) notifyWorkerRejected(mr *MergeRequest, reason string) {
 	router := mail.NewRouter(m.workDir)
