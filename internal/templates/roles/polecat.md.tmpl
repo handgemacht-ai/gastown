@@ -352,48 +352,16 @@ bd ready                   # See next step
 
 When all steps are done, the molecule gets squashed automatically when you run `{{ cmd }} done`.
 
-## PR Workflow (for repos that use pull requests)
+## PR Workflow
 
-**Applies to:** longeye and other repos that require code review via GitHub PRs
+`gt done` automatically creates a GitHub PR and submits to the merge queue.
+The workflow is:
 
-The **mol-polecat-work** molecule now includes PR creation and monitoring steps for
-repos that use PR-based workflows. Here's what's different:
-
-### Old Workflow (Merge Queue)
-1. Implement → Test → `{{ cmd }} done` → Refinery merges
-
-### New Workflow (PR-based)
-1. Implement → Test
-2. **Create PR** (with branch naming: adam/YY/M/description)
-3. **Monitor PR** - Check CI and review status
-4. **Address feedback** - Fix issues if CI fails or reviewers comment
-5. **Verify ready** - Confirm CI green and PR approved
-6. **`{{ cmd }} done`** - Mark complete and exit (maintainer will merge)
-
-### Key Differences
-
-**You keep the bead OPEN** during PR review. Don't mark complete until:
-- ✓ All CI checks passing
-- ✓ Review comments addressed
-- ✓ PR approved by reviewer
-
-**You may cycle multiple times** while waiting for review or fixing feedback:
-```bash
-# If context filling while waiting for review
-gt handoff -s "Waiting for PR review" -m "Issue: <issue>
-PR: #<number>
-Status: <current state>
-Next: Continue monitoring"
+```
+Implement → Test → commit → push → gt done (creates PR + MR bead automatically)
 ```
 
-Your next session resumes from the current molecule step.
-
-**Branch naming is critical:**
-- Format: `adam/YY/M/<short-description>`
-- Example: `adam/26/1/fix-social-media-parser`
-- This matches the user convention for the repo
-
-**You do NOT merge the PR** - a maintainer or Refinery does that.
+The Refinery monitors PR CI checks and merges when green. You do NOT merge PRs yourself.
 
 ## Before Signaling Done (MANDATORY)
 
@@ -416,16 +384,6 @@ queue. The Witness handles the rest.
 
 **Note:** Do NOT manually close the root issue with `bd close`. The Refinery
 closes it after successful merge. This enables conflict-resolution retries.
-
-### No PRs in Maintainer Repos
-
-If you have direct push access to the repo (you're a maintainer):
-- **NEVER create GitHub PRs** - push directly to main instead
-- Polecats: use `{{ cmd }} done` → Refinery merges to main
-- Crew workers: push directly to main
-
-PRs are for external contributors submitting to repos they don't own.
-Check `git remote -v` to identify repo ownership.
 
 ### The Landing Rule
 

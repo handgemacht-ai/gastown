@@ -53,6 +53,12 @@ type MergeQueueConfig struct {
 
 	// MaxConcurrent is the maximum number of MRs to process concurrently.
 	MaxConcurrent int `json:"max_concurrent"`
+
+	// PRChecksTimeout is max wait for CI checks (e.g., "15m"). Default: "15m".
+	PRChecksTimeout string `json:"pr_checks_timeout"`
+
+	// PRMergeMethod is "squash" (default), "merge", or "rebase".
+	PRMergeMethod string `json:"pr_merge_method"`
 }
 
 // DefaultMergeQueueConfig returns sensible defaults for merge queue configuration.
@@ -68,6 +74,8 @@ func DefaultMergeQueueConfig() *MergeQueueConfig {
 		RetryFlakyTests:      1,
 		PollInterval:         30 * time.Second,
 		MaxConcurrent:        1,
+		PRChecksTimeout:      "15m",
+		PRMergeMethod:        "squash",
 	}
 }
 
@@ -88,6 +96,8 @@ type MRInfo struct {
 	ConvoyCreatedAt *time.Time // Convoy creation time
 	CreatedAt       time.Time  // MR creation time
 	BlockedBy       string     // Task ID blocking this MR
+	PRNumber        int        // GitHub PR number (0 = no PR)
+	PRURL           string     // GitHub PR URL
 }
 
 // Engineer is the merge queue processor that polls for ready merge-requests
@@ -175,6 +185,8 @@ func (e *Engineer) LoadConfig() error {
 		RetryFlakyTests      *int    `json:"retry_flaky_tests"`
 		PollInterval         *string `json:"poll_interval"`
 		MaxConcurrent        *int    `json:"max_concurrent"`
+		PRChecksTimeout      *string `json:"pr_checks_timeout"`
+		PRMergeMethod        *string `json:"pr_merge_method"`
 	}
 
 	if err := json.Unmarshal(rawConfig.MergeQueue, &mqRaw); err != nil {
@@ -216,6 +228,12 @@ func (e *Engineer) LoadConfig() error {
 		}
 		e.config.PollInterval = dur
 	}
+	if mqRaw.PRChecksTimeout != nil {
+		e.config.PRChecksTimeout = *mqRaw.PRChecksTimeout
+	}
+	if mqRaw.PRMergeMethod != nil {
+		e.config.PRMergeMethod = *mqRaw.PRMergeMethod
+	}
 
 	return nil
 }
@@ -250,130 +268,209 @@ func (e *Engineer) ProcessMR(ctx context.Context, mr *beads.Issue) ProcessResult
 	_, _ = fmt.Fprintf(e.output, "  Branch: %s\n", mrFields.Branch)
 	_, _ = fmt.Fprintf(e.output, "  Target: %s\n", mrFields.Target)
 	_, _ = fmt.Fprintf(e.output, "  Worker: %s\n", mrFields.Worker)
+	if mrFields.PRNumber > 0 {
+		_, _ = fmt.Fprintf(e.output, "  PR: #%d\n", mrFields.PRNumber)
+	}
 
-	return e.doMerge(ctx, mrFields.Branch, mrFields.Target, mrFields.SourceIssue)
+	return e.doMerge(ctx, mrFields.Branch, mrFields.Target, mrFields.SourceIssue, mrFields.PRNumber)
 }
 
-// doMerge performs the actual git merge operation.
-// This is the core merge logic shared by ProcessMR and ProcessMRFromQueue.
-func (e *Engineer) doMerge(ctx context.Context, branch, target, sourceIssue string) ProcessResult {
-	// Step 1: Verify source branch exists locally (shared .repo.git with polecats)
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking local branch %s...\n", branch)
-	exists, err := e.git.BranchExists(branch)
-	if err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("failed to check branch %s: %v", branch, err),
-		}
-	}
-	if !exists {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("branch %s not found locally", branch),
-		}
-	}
-
-	// Step 2: Checkout the target branch
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking out target branch %s...\n", target)
-	if err := e.git.Checkout(target); err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("failed to checkout target %s: %v", target, err),
-		}
-	}
-
-	// Make sure target is up to date with origin
-	if err := e.git.Pull("origin", target); err != nil {
-		// Pull might fail if nothing to pull, that's ok
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: pull from origin/%s: %v (continuing)\n", target, err)
-	}
-
-	// Step 3: Check for merge conflicts (using local branch)
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking for conflicts...\n")
-	conflicts, err := e.git.CheckConflicts(branch, target)
-	if err != nil {
-		return ProcessResult{
-			Success:  false,
-			Conflict: true,
-			Error:    fmt.Sprintf("conflict check failed: %v", err),
-		}
-	}
-	if len(conflicts) > 0 {
-		return ProcessResult{
-			Success:  false,
-			Conflict: true,
-			Error:    fmt.Sprintf("merge conflicts in: %v", conflicts),
-		}
-	}
-
-	// Step 4: Run tests if configured
-	if e.config.RunTests && e.config.TestCommand != "" {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Running tests: %s\n", e.config.TestCommand)
-		result := e.runTests(ctx)
-		if !result.Success {
+// doMerge performs the merge operation via GitHub PR.
+// If prNumber is 0, it will attempt to find or create a PR for the branch.
+func (e *Engineer) doMerge(ctx context.Context, branch, target, sourceIssue string, prNumber int) ProcessResult {
+	// If no PR number, try to find or create one
+	if prNumber == 0 {
+		var err error
+		prNumber, _, err = e.findOrCreatePR(branch, target, sourceIssue)
+		if err != nil {
 			return ProcessResult{
-				Success:     false,
-				TestsFailed: true,
-				Error:       result.Error,
+				Success: false,
+				Error:   fmt.Sprintf("could not find/create PR: %v", err),
 			}
 		}
-		_, _ = fmt.Fprintln(e.output, "[Engineer] Tests passed")
 	}
 
-	// Step 5: Perform the actual merge using squash merge
-	// Get the original commit message from the polecat branch to preserve the
-	// conventional commit format (feat:/fix:) instead of creating redundant merge commits
-	originalMsg, err := e.git.GetBranchCommitMessage(branch)
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Using PR #%d for merge\n", prNumber)
+
+	// Wait for CI checks
+	passed, details, err := e.waitForPRChecks(prNumber)
 	if err != nil {
-		// Fallback to a descriptive message if we can't get the original
-		originalMsg = fmt.Sprintf("Squash merge %s into %s", branch, target)
-		if sourceIssue != "" {
-			originalMsg = fmt.Sprintf("Squash merge %s into %s (%s)", branch, target, sourceIssue)
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("error waiting for PR checks: %v", err),
 		}
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not get original commit message: %v\n", err)
 	}
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Squash merging with message: %s\n", strings.TrimSpace(originalMsg))
-	if err := e.git.MergeSquash(branch, originalMsg); err != nil {
-		// ZFC: Use git's porcelain output to detect conflicts instead of parsing stderr.
-		// GetConflictingFiles() uses `git diff --diff-filter=U` which is proper.
-		conflicts, conflictErr := e.git.GetConflictingFiles()
-		if conflictErr == nil && len(conflicts) > 0 {
-			_ = e.git.AbortMerge()
+	if !passed {
+		return ProcessResult{
+			Success:     false,
+			TestsFailed: true,
+			Error:       details,
+		}
+	}
+
+	_, _ = fmt.Fprintln(e.output, "[Engineer] PR checks passed")
+
+	// Merge via GitHub
+	mergeCommit, err := e.mergePR(prNumber)
+	if err != nil {
+		if isConflictError(err) {
 			return ProcessResult{
 				Success:  false,
 				Conflict: true,
-				Error:    "merge conflict during actual merge",
+				Error:    err.Error(),
 			}
 		}
 		return ProcessResult{
 			Success: false,
-			Error:   fmt.Sprintf("merge failed: %v", err),
+			Error:   fmt.Sprintf("PR merge failed: %v", err),
 		}
 	}
 
-	// Step 6: Get the merge commit SHA
-	mergeCommit, err := e.git.Rev("HEAD")
-	if err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("failed to get merge commit SHA: %v", err),
-		}
+	// Pull main locally to stay in sync
+	if pullErr := e.git.Pull("origin", target); pullErr != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: pull from origin/%s: %v (continuing)\n", target, pullErr)
 	}
 
-	// Step 7: Push to origin
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing to origin/%s...\n", target)
-	if err := e.git.Push("origin", target, false); err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("failed to push to origin: %v", err),
-		}
-	}
-
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Successfully merged: %s\n", mergeCommit[:8])
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Successfully merged PR #%d: %s\n", prNumber, mergeCommit[:8])
 	return ProcessResult{
 		Success:     true,
 		MergeCommit: mergeCommit,
 	}
+}
+
+// findOrCreatePR finds an existing PR for the branch or creates a new one.
+// Returns (prNumber, prURL, error).
+func (e *Engineer) findOrCreatePR(branch, target, sourceIssue string) (int, string, error) {
+	// Check for existing PR
+	listCmd := exec.Command("gh", "pr", "list", "--head", branch, "--json", "number,url", "--limit", "1")
+	listCmd.Dir = e.workDir
+	listOut, err := listCmd.Output()
+	if err == nil && len(listOut) > 0 {
+		var existing []struct {
+			Number int    `json:"number"`
+			URL    string `json:"url"`
+		}
+		if err := json.Unmarshal(listOut, &existing); err == nil && len(existing) > 0 {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Found existing PR #%d\n", existing[0].Number)
+			return existing[0].Number, existing[0].URL, nil
+		}
+	}
+
+	// Create a new PR
+	title := fmt.Sprintf("Merge: %s", sourceIssue)
+	if sourceIssue == "" {
+		title = fmt.Sprintf("Merge: %s", branch)
+	}
+
+	body := fmt.Sprintf("Automated PR from Refinery\n\nBranch: `%s`\nSource: `%s`", branch, sourceIssue)
+
+	createCmd := exec.Command("gh", "pr", "create",
+		"--base", target,
+		"--head", branch,
+		"--title", title,
+		"--body", body,
+		"--json", "number,url",
+	)
+	createCmd.Dir = e.workDir
+	createOut, err := createCmd.Output()
+	if err != nil {
+		return 0, "", fmt.Errorf("gh pr create: %w", err)
+	}
+
+	var result struct {
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+	}
+	if err := json.Unmarshal(createOut, &result); err != nil {
+		return 0, "", fmt.Errorf("parsing gh pr create output: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Created PR #%d: %s\n", result.Number, result.URL)
+	return result.Number, result.URL, nil
+}
+
+// waitForPRChecks waits for CI checks on a PR to complete.
+// Returns (passed, details, error).
+func (e *Engineer) waitForPRChecks(prNumber int) (bool, string, error) {
+	timeout := e.config.PRChecksTimeout
+	if timeout == "" {
+		timeout = "15m"
+	}
+
+	prStr := fmt.Sprintf("%d", prNumber)
+	cmd := exec.Command("gh", "pr", "checks", prStr, "--watch", "--fail-fast")
+	cmd.Dir = e.workDir
+
+	// Set a timeout via context
+	timeoutDur, err := time.ParseDuration(timeout)
+	if err != nil {
+		timeoutDur = 15 * time.Minute
+	}
+
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return false, "", fmt.Errorf("starting gh pr checks: %w", err)
+	}
+
+	// Wait with timeout
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		output := outBuf.String()
+		if err != nil {
+			// Non-zero exit means checks failed
+			return false, fmt.Sprintf("CI checks failed:\n%s", output), nil
+		}
+		return true, "", nil
+	case <-time.After(timeoutDur):
+		_ = cmd.Process.Kill()
+		return false, fmt.Sprintf("CI checks timed out after %s", timeout), nil
+	}
+}
+
+// mergePR merges a PR via the GitHub CLI.
+// Returns the merge commit SHA.
+func (e *Engineer) mergePR(prNumber int) (string, error) {
+	method := e.config.PRMergeMethod
+	if method == "" {
+		method = "squash"
+	}
+
+	prStr := fmt.Sprintf("%d", prNumber)
+	mergeCmd := exec.Command("gh", "pr", "merge", prStr,
+		"--"+method,
+		"--delete-branch",
+	)
+	mergeCmd.Dir = e.workDir
+	mergeOut, err := mergeCmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", strings.TrimSpace(string(mergeOut)), err)
+	}
+
+	// Get the merge commit SHA from the target branch
+	// After merge, fetch the latest and get HEAD of the target
+	_ = e.git.Fetch("origin")
+	sha, err := e.git.Rev("origin/" + e.config.TargetBranch)
+	if err != nil {
+		// If we can't get the SHA, use a placeholder
+		sha = "unknown"
+	}
+
+	return sha, nil
+}
+
+// isConflictError checks if an error indicates a merge conflict.
+func isConflictError(err error) bool {
+	errStr := err.Error()
+	return strings.Contains(errStr, "conflict") ||
+		strings.Contains(errStr, "not mergeable") ||
+		strings.Contains(errStr, "CONFLICTING")
 }
 
 // runTests runs the configured test command and returns the result.
@@ -551,9 +648,12 @@ func (e *Engineer) ProcessMRInfo(ctx context.Context, mr *MRInfo) ProcessResult 
 	_, _ = fmt.Fprintf(e.output, "  Target: %s\n", mr.Target)
 	_, _ = fmt.Fprintf(e.output, "  Worker: %s\n", mr.Worker)
 	_, _ = fmt.Fprintf(e.output, "  Source: %s\n", mr.SourceIssue)
+	if mr.PRNumber > 0 {
+		_, _ = fmt.Fprintf(e.output, "  PR: #%d\n", mr.PRNumber)
+	}
 
 	// Use the shared merge logic
-	return e.doMerge(ctx, mr.Branch, mr.Target, mr.SourceIssue)
+	return e.doMerge(ctx, mr.Branch, mr.Target, mr.SourceIssue, mr.PRNumber)
 }
 
 // HandleMRInfoSuccess handles a successful merge from MRInfo.
@@ -623,10 +723,12 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 		}
 	}
 
-	// 2. Delete source branch if configured (local only)
+	// 2. Delete local source branch if configured
+	// Remote branch is already deleted by `gh pr merge --delete-branch`.
 	if e.config.DeleteMergedBranches && mr.Branch != "" {
 		if err := e.git.DeleteBranch(mr.Branch, true); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete branch %s: %v\n", mr.Branch, err)
+			// Not a warning - local branch may not exist (shared worktree)
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Note: local branch %s not deleted: %v\n", mr.Branch, err)
 		} else {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted local branch: %s\n", mr.Branch)
 		}
@@ -765,7 +867,7 @@ func (e *Engineer) createConflictResolutionTaskForMR(mr *MRInfo, _ ProcessResult
 5. Force-push the resolved branch: git push -f
 6. Close this task: bd close <this-task-id>
 
-The Refinery will automatically retry the merge after you force-push.`,
+Force-push updates the existing PR automatically - CI reruns and Refinery retries the merge.`,
 		mr.Branch,
 		mr.ID,
 		mr.Branch,
@@ -871,6 +973,8 @@ func (e *Engineer) ListReadyMRs() ([]*MRInfo, error) {
 			ConvoyID:        fields.ConvoyID,
 			ConvoyCreatedAt: convoyCreatedAt,
 			CreatedAt:       createdAt,
+			PRNumber:        fields.PRNumber,
+			PRURL:           fields.PRURL,
 		}
 		mrs = append(mrs, mr)
 	}

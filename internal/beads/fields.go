@@ -198,6 +198,10 @@ type MRFields struct {
 	// Convoy tracking (for priority scoring - convoy starvation prevention)
 	ConvoyID        string // Parent convoy ID if part of a convoy
 	ConvoyCreatedAt string // Convoy creation time (ISO 8601) for starvation prevention
+
+	// GitHub PR tracking
+	PRNumber int    // GitHub PR number (0 = no PR created)
+	PRURL    string // Full GitHub PR URL
 }
 
 // ParseMRFields extracts structured merge-request fields from an issue's description.
@@ -272,6 +276,14 @@ func ParseMRFields(issue *Issue) *MRFields {
 		case "convoy_created_at", "convoy-created-at", "convoycreatedat":
 			fields.ConvoyCreatedAt = value
 			hasFields = true
+		case "pr_number", "pr-number", "prnumber":
+			if n, err := parseIntField(value); err == nil {
+				fields.PRNumber = n
+				hasFields = true
+			}
+		case "pr_url", "pr-url", "prurl":
+			fields.PRURL = value
+			hasFields = true
 		}
 	}
 
@@ -336,6 +348,12 @@ func FormatMRFields(fields *MRFields) string {
 	if fields.ConvoyCreatedAt != "" {
 		lines = append(lines, "convoy_created_at: "+fields.ConvoyCreatedAt)
 	}
+	if fields.PRNumber > 0 {
+		lines = append(lines, fmt.Sprintf("pr_number: %d", fields.PRNumber))
+	}
+	if fields.PRURL != "" {
+		lines = append(lines, "pr_url: "+fields.PRURL)
+	}
 
 	return strings.Join(lines, "\n")
 }
@@ -382,6 +400,12 @@ func SetMRFields(issue *Issue, fields *MRFields) string {
 		"convoy_created_at":  true,
 		"convoy-created-at":  true,
 		"convoycreatedat":    true,
+		"pr_number":          true,
+		"pr-number":          true,
+		"prnumber":           true,
+		"pr_url":             true,
+		"pr-url":             true,
+		"prurl":              true,
 	}
 
 	// Collect non-MR lines from existing description
