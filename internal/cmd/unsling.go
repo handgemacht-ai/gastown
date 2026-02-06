@@ -113,14 +113,38 @@ func runUnsling(cmd *cobra.Command, args []string) error {
 
 	b := beads.New(beadsPath)
 
-	// Get the agent bead to find current hook
-	agentBead, err := b.Show(agentBeadID)
+	// Get the agent bead to find current hook.
+	// The agent bead may not exist (e.g., crew members whose agent beads haven't
+	// been created yet). This is NOT a fatal error - we fall back to querying
+	// for hooked beads by status.
+	var agentBead *beads.Issue
+	agentBead, err = b.Show(agentBeadID)
 	if err != nil {
-		return fmt.Errorf("getting agent bead %s: %w", agentBeadID, err)
+		// Agent bead not found - this is OK, we'll fall back to status query
+		agentBead = nil
 	}
 
-	// Check if agent has work hooked (via hook_bead field)
-	hookedBeadID := agentBead.HookBead
+	// Check if agent has work hooked (via hook_bead field on agent bead)
+	hookedBeadID := ""
+	if agentBead != nil {
+		hookedBeadID = agentBead.HookBead
+	}
+
+	// Fallback: if hook_bead is empty (cleared or agent bead missing), query for
+	// beads that still have status=hooked assigned to this agent. This catches
+	// stale hooked beads where hook_bead was cleared but bead status wasn't reset.
+	// This matches the fallback behavior in runMoleculeStatus.
+	if hookedBeadID == "" {
+		hookedBeads, listErr := b.List(beads.ListOptions{
+			Status:   beads.StatusHooked,
+			Assignee: agentID,
+			Priority: -1,
+		})
+		if listErr == nil && len(hookedBeads) > 0 {
+			hookedBeadID = hookedBeads[0].ID
+		}
+	}
+
 	if hookedBeadID == "" {
 		if targetAgent != "" {
 			fmt.Printf("%s No work hooked for %s\n", style.Dim.Render("ℹ"), agentID)
@@ -171,9 +195,13 @@ func runUnsling(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Clear the hook (gt-zecmc: removed agent_state update - observable from tmux)
-	if err := b.ClearHookBead(agentBeadID); err != nil {
-		return fmt.Errorf("clearing hook from agent bead %s: %w", agentBeadID, err)
+	// Clear the hook from agent bead if it exists (gt-zecmc: removed agent_state update)
+	if agentBead != nil {
+		if err := b.ClearHookBead(agentBeadID); err != nil {
+			// Non-fatal: the hook_bead field may already be cleared.
+			// The bead status update below is the more important cleanup.
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: couldn't clear hook from agent bead %s: %v\n", agentBeadID, err)
+		}
 	}
 
 	// Update hooked bead status from "hooked" back to "open".
