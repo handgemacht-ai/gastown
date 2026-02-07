@@ -181,7 +181,7 @@ func (m *Manager) loadRig(name string, entry config.RigEntry) (*Rig, error) {
 	crewDir := filepath.Join(rigPath, "crew")
 	if entries, err := os.ReadDir(crewDir); err == nil {
 		for _, e := range entries {
-			if e.IsDir() {
+			if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
 				rig.Crew = append(rig.Crew, e.Name())
 			}
 		}
