@@ -37,20 +37,38 @@ type DoltServerConfig struct {
 	// AutoRestart controls whether to restart on crash.
 	AutoRestart bool `json:"auto_restart,omitempty"`
 
-	// RestartDelay is the delay before restarting after crash.
+	// RestartDelay is the initial delay before restarting after crash (default 5s).
 	RestartDelay time.Duration `json:"restart_delay,omitempty"`
+
+	// MaxRestartDelay is the maximum backoff delay (default 5min).
+	MaxRestartDelay time.Duration `json:"max_restart_delay,omitempty"`
+
+	// MaxRestartsInWindow is the maximum number of restarts allowed within
+	// RestartWindow before escalating instead of retrying (default 5).
+	MaxRestartsInWindow int `json:"max_restarts_in_window,omitempty"`
+
+	// RestartWindow is the time window for counting restarts (default 10min).
+	RestartWindow time.Duration `json:"restart_window,omitempty"`
+
+	// HealthyResetInterval is how long the server must stay healthy before
+	// the backoff counter resets (default 5min).
+	HealthyResetInterval time.Duration `json:"healthy_reset_interval,omitempty"`
 }
 
 // DefaultDoltServerConfig returns sensible defaults for Dolt server config.
 func DefaultDoltServerConfig(townRoot string) *DoltServerConfig {
 	return &DoltServerConfig{
-		Enabled:      false, // Opt-in
-		Port:         3306,
-		Host:         "127.0.0.1",
-		DataDir:      filepath.Join(townRoot, "dolt"),
-		LogFile:      filepath.Join(townRoot, "daemon", "dolt-server.log"),
-		AutoRestart:  true,
-		RestartDelay: 5 * time.Second,
+		Enabled:              false, // Opt-in
+		Port:                 3306,
+		Host:                 "127.0.0.1",
+		DataDir:              filepath.Join(townRoot, "dolt"),
+		LogFile:              filepath.Join(townRoot, "daemon", "dolt-server.log"),
+		AutoRestart:          true,
+		RestartDelay:         5 * time.Second,
+		MaxRestartDelay:      5 * time.Minute,
+		MaxRestartsInWindow:  5,
+		RestartWindow:        10 * time.Minute,
+		HealthyResetInterval: 5 * time.Minute,
 	}
 }
 
@@ -76,6 +94,12 @@ type DoltServerManager struct {
 	process   *os.Process
 	startedAt time.Time
 	lastCheck time.Time
+
+	// Backoff state for restart logic
+	currentDelay    time.Duration // Current backoff delay (grows exponentially)
+	restartTimes    []time.Time   // Timestamps of recent restarts within window
+	lastHealthyTime time.Time     // Last time the server was confirmed healthy
+	escalated       bool          // Whether we've already escalated (avoid spamming)
 }
 
 // NewDoltServerManager creates a new Dolt server manager.
@@ -196,6 +220,7 @@ func isDoltSqlServer(pid int) bool {
 
 // EnsureRunning ensures the Dolt server is running.
 // If not running, starts it. If running but unhealthy, restarts it.
+// Uses exponential backoff and a max-restart cap to avoid crash-looping.
 func (m *DoltServerManager) EnsureRunning() error {
 	if !m.IsEnabled() {
 		return nil
@@ -216,9 +241,10 @@ func (m *DoltServerManager) EnsureRunning() error {
 		if err := m.checkHealthLocked(); err != nil {
 			m.logger("Dolt server unhealthy: %v, restarting...", err)
 			m.stopLocked()
-			time.Sleep(m.config.RestartDelay)
-			return m.startLocked()
+			return m.restartWithBackoff()
 		}
+		// Server is healthy — reset backoff if it's been healthy long enough
+		m.maybeResetBackoff()
 		return nil
 	}
 
@@ -226,7 +252,157 @@ func (m *DoltServerManager) EnsureRunning() error {
 	if pid > 0 {
 		m.logger("Dolt server PID %d is dead, cleaning up and restarting...", pid)
 	}
+	return m.restartWithBackoff()
+}
+
+// restartWithBackoff attempts to restart the Dolt server with exponential backoff
+// and a max-restart cap. If the cap is exceeded, it escalates instead of retrying.
+// Must be called with m.mu held.
+func (m *DoltServerManager) restartWithBackoff() error {
+	now := time.Now()
+
+	// Prune restart times outside the window
+	m.pruneRestartTimes(now)
+
+	// Check if we've exceeded the restart cap
+	maxRestarts := m.config.MaxRestartsInWindow
+	if maxRestarts <= 0 {
+		maxRestarts = 5
+	}
+	if len(m.restartTimes) >= maxRestarts {
+		if !m.escalated {
+			m.escalated = true
+			m.logger("Dolt server restart cap reached (%d restarts in %v), escalating to mayor",
+				len(m.restartTimes), m.config.RestartWindow)
+			m.sendEscalationMail(len(m.restartTimes))
+		}
+		return fmt.Errorf("dolt server restart cap exceeded (%d restarts in %v); escalated to mayor",
+			len(m.restartTimes), m.config.RestartWindow)
+	}
+
+	// Apply exponential backoff delay
+	delay := m.getBackoffDelay()
+	if delay > 0 {
+		m.logger("Backing off %v before Dolt server restart (attempt %d in window)",
+			delay, len(m.restartTimes)+1)
+		// Unlock during sleep so we don't hold the mutex during backoff
+		m.mu.Unlock()
+		time.Sleep(delay)
+		m.mu.Lock()
+	}
+
+	// Record this restart attempt
+	m.restartTimes = append(m.restartTimes, time.Now())
+
+	// Advance the backoff for next time
+	m.advanceBackoff()
+
 	return m.startLocked()
+}
+
+// getBackoffDelay returns the current backoff delay.
+func (m *DoltServerManager) getBackoffDelay() time.Duration {
+	if m.currentDelay <= 0 {
+		return m.config.RestartDelay
+	}
+	return m.currentDelay
+}
+
+// advanceBackoff doubles the current delay up to MaxRestartDelay.
+func (m *DoltServerManager) advanceBackoff() {
+	baseDelay := m.config.RestartDelay
+	if baseDelay <= 0 {
+		baseDelay = 5 * time.Second
+	}
+	maxDelay := m.config.MaxRestartDelay
+	if maxDelay <= 0 {
+		maxDelay = 5 * time.Minute
+	}
+
+	if m.currentDelay <= 0 {
+		m.currentDelay = baseDelay
+	}
+	m.currentDelay *= 2
+	if m.currentDelay > maxDelay {
+		m.currentDelay = maxDelay
+	}
+}
+
+// pruneRestartTimes removes restart timestamps outside the configured window.
+func (m *DoltServerManager) pruneRestartTimes(now time.Time) {
+	window := m.config.RestartWindow
+	if window <= 0 {
+		window = 10 * time.Minute
+	}
+	cutoff := now.Add(-window)
+	pruned := m.restartTimes[:0]
+	for _, t := range m.restartTimes {
+		if t.After(cutoff) {
+			pruned = append(pruned, t)
+		}
+	}
+	m.restartTimes = pruned
+}
+
+// maybeResetBackoff resets backoff state if the server has been healthy
+// for the configured HealthyResetInterval.
+// Must be called with m.mu held.
+func (m *DoltServerManager) maybeResetBackoff() {
+	now := time.Now()
+	resetInterval := m.config.HealthyResetInterval
+	if resetInterval <= 0 {
+		resetInterval = 5 * time.Minute
+	}
+
+	if m.lastHealthyTime.IsZero() {
+		m.lastHealthyTime = now
+		return
+	}
+
+	if now.Sub(m.lastHealthyTime) >= resetInterval {
+		if m.currentDelay > 0 || len(m.restartTimes) > 0 || m.escalated {
+			m.logger("Dolt server healthy for %v, resetting backoff state", resetInterval)
+			m.currentDelay = 0
+			m.restartTimes = nil
+			m.escalated = false
+		}
+	}
+	// Update last healthy time on every successful health check
+	m.lastHealthyTime = now
+}
+
+// sendEscalationMail sends a mail to the mayor when the Dolt server has
+// exceeded its restart cap, indicating a systemic issue.
+func (m *DoltServerManager) sendEscalationMail(restartCount int) {
+	subject := fmt.Sprintf("ESCALATION: Dolt server crash-looping (%d restarts)", restartCount)
+	body := fmt.Sprintf(`The Dolt server has restarted %d times within %v and has been capped.
+
+The daemon will NOT restart it again until the backoff window expires or the issue is resolved.
+
+Possible causes:
+- Bad configuration
+- Corrupt data directory
+- Disk full
+- Port conflict
+
+Data dir: %s
+Log file: %s
+Host: %s:%d
+
+Action needed: Investigate and fix the root cause, then restart the daemon or the Dolt server manually.`,
+		restartCount, m.config.RestartWindow,
+		m.config.DataDir, m.config.LogFile,
+		m.config.Host, m.config.Port)
+
+	cmd := exec.Command("gt", "mail", "send", "mayor/", "-s", subject, "-m", body) //nolint:gosec // G204: args are constructed internally
+	cmd.Dir = m.townRoot
+	cmd.Env = os.Environ()
+
+	if err := cmd.Run(); err != nil {
+		m.logger("Warning: failed to send escalation mail to mayor: %v", err)
+	} else {
+		m.logger("Sent escalation mail to mayor about Dolt server crash-loop")
+	}
 }
 
 // Start starts the Dolt SQL server.
