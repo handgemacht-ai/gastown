@@ -65,6 +65,10 @@ type SessionStartOptions struct {
 	// RuntimeConfigDir is resolved config directory for the runtime account.
 	// If set, this is injected as an environment variable.
 	RuntimeConfigDir string
+
+	// DoltBranch is the polecat-specific Dolt branch for write isolation.
+	// If set, BD_BRANCH env var is injected into the polecat session.
+	DoltBranch string
 }
 
 // SessionInfo contains information about a running polecat session.
@@ -215,6 +219,11 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 		command = config.PrependEnv(command, map[string]string{runtimeConfig.Session.ConfigDirEnv: opts.RuntimeConfigDir})
 	}
 
+	// Branch-per-polecat: inject BD_BRANCH into startup command
+	if opts.DoltBranch != "" {
+		command = config.PrependEnv(command, map[string]string{"BD_BRANCH": opts.DoltBranch})
+	}
+
 	// Create session with command directly to avoid send-keys race condition.
 	// See: https://github.com/anthropics/gastown/issues/280
 	if err := m.tmux.NewSessionWithCommand(sessionID, workDir, command); err != nil {
@@ -234,6 +243,12 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	})
 	for k, v := range envVars {
 		debugSession("SetEnvironment "+k, m.tmux.SetEnvironment(sessionID, k, v))
+	}
+
+	// Branch-per-polecat: set BD_BRANCH in tmux session environment
+	// This ensures respawned processes also inherit the branch setting.
+	if opts.DoltBranch != "" {
+		debugSession("SetEnvironment BD_BRANCH", m.tmux.SetEnvironment(sessionID, "BD_BRANCH", opts.DoltBranch))
 	}
 
 	// Hook the issue to the polecat if provided via --issue flag

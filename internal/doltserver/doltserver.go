@@ -1012,3 +1012,69 @@ func moveDir(src, dest string) error {
 	}
 	return nil
 }
+
+// doltSQL executes a SQL statement against a specific rig database on the Dolt server.
+// Uses the dolt CLI to connect to the running server.
+func doltSQL(townRoot, rigDB, query string) error {
+	config := DefaultConfig(townRoot)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "dolt", "sql",
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(config.Port),
+		"--user", config.User,
+		"--use-db", rigDB,
+		"-q", query,
+	)
+	cmd.Dir = config.DataDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w (output: %s)", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// PolecatBranchName returns the Dolt branch name for a polecat.
+// Format: polecat-<name>-<unix-timestamp>
+func PolecatBranchName(polecatName string) string {
+	return fmt.Sprintf("polecat-%s-%d", strings.ToLower(polecatName), time.Now().Unix())
+}
+
+// CreatePolecatBranch creates a Dolt branch for a polecat's isolated writes.
+// Each polecat gets its own branch to eliminate optimistic lock contention.
+func CreatePolecatBranch(townRoot, rigDB, branchName string) error {
+	query := fmt.Sprintf("CALL DOLT_BRANCH('%s')", branchName)
+	if err := doltSQL(townRoot, rigDB, query); err != nil {
+		return fmt.Errorf("creating Dolt branch %s in %s: %w", branchName, rigDB, err)
+	}
+	return nil
+}
+
+// MergePolecatBranch merges a polecat's Dolt branch into main and deletes it.
+// Called at gt done time to make the polecat's beads changes visible.
+func MergePolecatBranch(townRoot, rigDB, branchName string) error {
+	// Checkout main, merge, delete branch — each as separate commands
+	// to avoid multi-statement parsing issues with dolt sql CLI.
+	if err := doltSQL(townRoot, rigDB, "CALL DOLT_CHECKOUT('main')"); err != nil {
+		return fmt.Errorf("checkout main in %s: %w", rigDB, err)
+	}
+	if err := doltSQL(townRoot, rigDB, fmt.Sprintf("CALL DOLT_MERGE('%s')", branchName)); err != nil {
+		return fmt.Errorf("merging %s to main in %s: %w", branchName, rigDB, err)
+	}
+	if err := doltSQL(townRoot, rigDB, fmt.Sprintf("CALL DOLT_BRANCH('-D', '%s')", branchName)); err != nil {
+		// Non-fatal: branch deletion failure doesn't lose data
+		fmt.Printf("Warning: could not delete Dolt branch %s: %v\n", branchName, err)
+	}
+	return nil
+}
+
+// DeletePolecatBranch deletes a polecat's Dolt branch (cleanup/nuke).
+// Best-effort: logs warning if branch doesn't exist or deletion fails.
+func DeletePolecatBranch(townRoot, rigDB, branchName string) {
+	query := fmt.Sprintf("CALL DOLT_BRANCH('-d', '%s')", branchName)
+	if err := doltSQL(townRoot, rigDB, query); err != nil {
+		// Non-fatal: branch may not exist (already merged/deleted)
+		fmt.Printf("Warning: could not delete Dolt branch %s: %v\n", branchName, err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mail"
@@ -505,6 +506,21 @@ func runDone(cmd *cobra.Command, args []string) error {
 	}
 
 notifyWitness:
+	// Branch-per-polecat: merge polecat's Dolt branch to main.
+	// This makes all beads changes (MR bead, issue updates) visible on main
+	// before the refinery or witness try to read them.
+	if bdBranch := os.Getenv("BD_BRANCH"); bdBranch != "" {
+		fmt.Printf("Merging Dolt branch %s to main...\n", bdBranch)
+		if err := doltserver.MergePolecatBranch(townRoot, rigName, bdBranch); err != nil {
+			style.PrintWarning("could not merge Dolt branch: %v (data still on branch %s)", err, bdBranch)
+		} else {
+			fmt.Printf("%s Dolt branch merged to main\n", style.Bold.Render("✓"))
+		}
+		// Unset BD_BRANCH so subsequent bd operations (updateAgentStateOnDone)
+		// write directly to main instead of the now-deleted branch.
+		os.Unsetenv("BD_BRANCH")
+	}
+
 	// Notify Witness about completion
 	// Use town-level beads for cross-agent mail
 	townRouter := mail.NewRouter(townRoot)

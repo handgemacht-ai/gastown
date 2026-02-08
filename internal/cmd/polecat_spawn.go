@@ -11,6 +11,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/polecat"
@@ -27,6 +28,7 @@ type SpawnedPolecatInfo struct {
 	ClonePath   string // Path to polecat's git worktree
 	SessionName string // Tmux session name (e.g., "gt-gastown-p-Toast")
 	Pane        string // Tmux pane ID (empty until StartSession is called)
+	DoltBranch  string // Dolt branch for write isolation (empty if not created)
 
 	// Internal fields for deferred session start
 	account string
@@ -161,6 +163,19 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 			polecatName, err, rigName, polecatName)
 	}
 
+	// Branch-per-polecat: create a Dolt branch for write isolation.
+	// Each polecat writes to its own branch (zero contention).
+	// Merge to main happens at gt done time.
+	var doltBranch string
+	doltBranchName := doltserver.PolecatBranchName(polecatName)
+	if err := doltserver.CreatePolecatBranch(townRoot, rigName, doltBranchName); err != nil {
+		// Non-fatal: polecat can still work on main (with contention)
+		fmt.Printf("%s Could not create Dolt branch (will use main): %v\n", style.Dim.Render("Warning:"), err)
+	} else {
+		doltBranch = doltBranchName
+		fmt.Printf("%s Dolt branch: %s\n", style.Bold.Render("✓"), doltBranch)
+	}
+
 	// Get session manager for session name (session start is deferred)
 	polecatSessMgr := polecat.NewSessionManager(t, r)
 	sessionName := polecatSessMgr.SessionName(polecatName)
@@ -176,6 +191,7 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 		ClonePath:   polecatObj.ClonePath,
 		SessionName: sessionName,
 		Pane:        "", // Empty until StartSession is called
+		DoltBranch:  doltBranch,
 		account:     opts.Account,
 		agent:       opts.Agent,
 	}, nil
@@ -223,6 +239,7 @@ func (s *SpawnedPolecatInfo) StartSession() (string, error) {
 	fmt.Printf("Starting session for %s/%s...\n", s.RigName, s.PolecatName)
 	startOpts := polecat.SessionStartOptions{
 		RuntimeConfigDir: claudeConfigDir,
+		DoltBranch:       s.DoltBranch,
 	}
 	if s.agent != "" {
 		cmd, err := config.BuildPolecatStartupCommandWithAgentOverride(s.RigName, s.PolecatName, r.Path, "", s.agent)
