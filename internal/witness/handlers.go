@@ -208,17 +208,17 @@ func HandleHelp(workDir, rigName string, msg *mail.Message, router *mail.Router)
 		return result
 	}
 
-	// Need to escalate to Mayor
+	// Need to escalate to Deacon (first line of escalation for routine ops)
 	if assessment.NeedsEscalation {
-		mailID, err := escalateToMayor(router, rigName, payload, assessment.EscalationReason)
+		mailID, err := escalateToDeacon(router, rigName, payload, assessment.EscalationReason)
 		if err != nil {
-			result.Error = fmt.Errorf("escalating to mayor: %w", err)
+			result.Error = fmt.Errorf("escalating to deacon: %w", err)
 			return result
 		}
 
 		result.Handled = true
 		result.MailSent = mailID
-		result.Action = fmt.Sprintf("escalated '%s' to mayor: %s", payload.Topic, assessment.EscalationReason)
+		result.Action = fmt.Sprintf("escalated '%s' to deacon: %s", payload.Topic, assessment.EscalationReason)
 	}
 
 	return result
@@ -570,11 +570,13 @@ func getCleanupStatus(workDir, rigName, polecatName string) string {
 	return ""
 }
 
-// escalateToMayor sends an escalation mail to the Mayor.
-func escalateToMayor(router *mail.Router, rigName string, payload *HelpPayload, reason string) (string, error) {
+// escalateToDeacon sends an escalation mail to the Deacon for routine operational issues.
+// The Deacon is the first line of escalation for witness operations. Only truly strategic
+// issues (deacon down, cross-rig coordination) should go directly to Mayor.
+func escalateToDeacon(router *mail.Router, rigName string, payload *HelpPayload, reason string) (string, error) {
 	msg := &mail.Message{
 		From:     fmt.Sprintf("%s/witness", rigName),
-		To:       "mayor/",
+		To:       "deacon/",
 		Subject:  fmt.Sprintf("Escalation: %s needs help", payload.Agent),
 		Priority: mail.PriorityHigh,
 		Body: fmt.Sprintf(`Agent: %s
@@ -611,14 +613,15 @@ type RecoveryPayload struct {
 	DetectedAt    time.Time
 }
 
-// EscalateRecoveryNeeded sends a RECOVERY_NEEDED escalation to the Mayor.
+// EscalateRecoveryNeeded sends a RECOVERY_NEEDED escalation to the Deacon.
 // This is used when a dormant polecat has unpushed work that needs recovery
-// before cleanup. The Mayor should coordinate recovery (e.g., push the branch,
-// save the work) before authorizing cleanup.
+// before cleanup. The Deacon should coordinate recovery (e.g., push the branch,
+// save the work) before authorizing cleanup. Only escalates to Mayor if Deacon
+// cannot resolve.
 func EscalateRecoveryNeeded(router *mail.Router, rigName string, payload *RecoveryPayload) (string, error) {
 	msg := &mail.Message{
 		From:     fmt.Sprintf("%s/witness", rigName),
-		To:       "mayor/",
+		To:       "deacon/",
 		Subject:  fmt.Sprintf("RECOVERY_NEEDED %s/%s", rigName, payload.PolecatName),
 		Priority: mail.PriorityUrgent,
 		Body: fmt.Sprintf(`Polecat: %s/%s

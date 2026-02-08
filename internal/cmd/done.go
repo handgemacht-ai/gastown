@@ -538,20 +538,20 @@ notifyWitness:
 		fmt.Printf("%s Witness notified of %s\n", style.Bold.Render("✓"), exitType)
 	}
 
-	// Notify dispatcher if work was dispatched by another agent
+	// Notify witness of work completion (witness is the polecat's direct supervisor).
+	// Previously this went to the dispatcher (often mayor), flooding mayor's inbox
+	// with routine operational mail. The witness handles polecat lifecycle.
 	if issueID != "" {
-		if dispatcher := getDispatcherFromBead(cwd, issueID); dispatcher != "" && dispatcher != sender {
-			dispatcherNotification := &mail.Message{
-				To:      dispatcher,
-				From:    sender,
-				Subject: fmt.Sprintf("WORK_DONE: %s", issueID),
-				Body:    strings.Join(bodyLines, "\n"),
-			}
-			if err := townRouter.Send(dispatcherNotification); err != nil {
-				style.PrintWarning("could not notify dispatcher %s: %v", dispatcher, err)
-			} else {
-				fmt.Printf("%s Dispatcher %s notified of %s\n", style.Bold.Render("✓"), dispatcher, exitType)
-			}
+		workDoneNotification := &mail.Message{
+			To:      witnessAddr,
+			From:    sender,
+			Subject: fmt.Sprintf("WORK_DONE: %s", issueID),
+			Body:    strings.Join(bodyLines, "\n"),
+		}
+		if err := townRouter.Send(workDoneNotification); err != nil {
+			style.PrintWarning("could not notify witness of work done: %v", err)
+		} else {
+			fmt.Printf("%s Witness notified of WORK_DONE for %s\n", style.Bold.Render("✓"), issueID)
 		}
 	}
 
@@ -776,27 +776,6 @@ func getIssueFromAgentHook(bd *beads.Beads, agentBeadID string) string {
 		return ""
 	}
 	return agentBead.HookBead
-}
-
-// getDispatcherFromBead retrieves the dispatcher agent ID from the bead's attachment fields.
-// Returns empty string if no dispatcher is recorded.
-func getDispatcherFromBead(cwd, issueID string) string {
-	if issueID == "" {
-		return ""
-	}
-
-	bd := beads.New(beads.ResolveBeadsDir(cwd))
-	issue, err := bd.Show(issueID)
-	if err != nil {
-		return ""
-	}
-
-	fields := beads.ParseAttachmentFields(issue)
-	if fields == nil {
-		return ""
-	}
-
-	return fields.DispatchedBy
 }
 
 // parseCleanupStatus converts a string flag value to a CleanupStatus.
