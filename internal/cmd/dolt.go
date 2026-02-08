@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/daemon"
@@ -252,6 +253,20 @@ func runDoltStatus(cmd *cobra.Command, args []string) error {
 				}
 			}
 			fmt.Printf("  Connection: %s\n", doltserver.GetConnectionString(townRoot))
+		}
+
+		// Resource metrics
+		metrics := doltserver.GetHealthMetrics(townRoot)
+		fmt.Printf("\n  %s\n", style.Bold.Render("Resource Metrics:"))
+		fmt.Printf("    Query latency: %v\n", metrics.QueryLatency.Round(time.Millisecond))
+		fmt.Printf("    Connections:   %d / %d (%.0f%%)\n",
+			metrics.Connections, metrics.MaxConnections, metrics.ConnectionPct)
+		fmt.Printf("    Disk usage:    %s\n", metrics.DiskUsageHuman)
+		if len(metrics.Warnings) > 0 {
+			fmt.Printf("\n  %s\n", style.Bold.Render("Warnings:"))
+			for _, w := range metrics.Warnings {
+				fmt.Printf("    %s %s\n", style.Bold.Render("!"), w)
+			}
 		}
 	} else {
 		fmt.Printf("%s Dolt server is %s\n",

@@ -569,11 +569,15 @@ func (m *DoltServerManager) checkHealth() error {
 }
 
 // checkHealthLocked checks health. Must be called with m.mu held.
+// Performs a connectivity check (SELECT 1) with latency measurement, and logs
+// warnings for degraded resource conditions (high latency, high connection count,
+// disk usage). Returns an error only if the server is unreachable.
 func (m *DoltServerManager) checkHealthLocked() error {
-	// Try to connect via MySQL protocol
-	// Use dolt sql -q to test connectivity
+	// 1. Connectivity + latency: time a SELECT 1
 	ctx, cancel := context.WithTimeout(context.Background(), doltCmdTimeout)
 	defer cancel()
+
+	start := time.Now()
 	cmd := exec.CommandContext(ctx, "dolt", "sql",
 		"--host", m.config.Host,
 		"--port", strconv.Itoa(m.config.Port),
@@ -588,7 +592,79 @@ func (m *DoltServerManager) checkHealthLocked() error {
 		return fmt.Errorf("health check failed: %w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
 
+	latency := time.Since(start)
+	if latency > 1*time.Second {
+		m.logger("Warning: Dolt health check latency %v exceeds 1s threshold — server may be under stress", latency.Round(time.Millisecond))
+	}
+
+	// 2. Connection count (best-effort, non-fatal)
+	m.checkConnectionCount()
+
+	// 3. Disk space (best-effort, non-fatal)
+	m.checkDiskUsage()
+
 	return nil
+}
+
+// checkConnectionCount queries the connection count and logs a warning if approaching the limit.
+// Non-fatal: failures are silently ignored.
+func (m *DoltServerManager) checkConnectionCount() {
+	ctx, cancel := context.WithTimeout(context.Background(), doltCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "dolt", "sql",
+		"--host", m.config.Host,
+		"--port", strconv.Itoa(m.config.Port),
+		"--no-auto-commit",
+		"--result-format", "csv",
+		"-q", "SELECT COUNT(*) AS cnt FROM information_schema.PROCESSLIST",
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return // non-fatal
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) < 2 {
+		return
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(lines[len(lines)-1]))
+	if err != nil {
+		return
+	}
+
+	// Use the doltserver package default (50) as a reasonable cap reference
+	maxConn := 50
+	threshold := (maxConn * 80) / 100
+	if count >= threshold {
+		m.logger("Warning: Dolt connection count %d is at %d%% of max %d — approaching limit",
+			count, (count*100)/maxConn, maxConn)
+	}
+}
+
+// checkDiskUsage checks disk usage of the data directory and logs a warning
+// if it exceeds 1 GB. Non-fatal: failures are silently ignored.
+func (m *DoltServerManager) checkDiskUsage() {
+	dataDir := m.config.DataDir
+	if dataDir == "" {
+		return
+	}
+
+	var total int64
+	_ = filepath.Walk(dataDir, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+
+	const gb = 1024 * 1024 * 1024
+	if total > gb {
+		m.logger("Warning: Dolt data directory %s is %.1f GB", dataDir, float64(total)/float64(gb))
+	}
 }
 
 // getDoltVersion returns the Dolt server version.

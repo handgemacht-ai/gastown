@@ -8,6 +8,117 @@ import (
 	"testing"
 )
 
+// =============================================================================
+// Health metrics tests
+// =============================================================================
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		input int64
+		want  string
+	}{
+		{0, "0 B"},
+		{500, "500 B"},
+		{1024, "1.0 KB"},
+		{1536, "1.5 KB"},
+		{1048576, "1.0 MB"},
+		{1572864, "1.5 MB"},
+		{1073741824, "1.0 GB"},
+		{2147483648, "2.0 GB"},
+	}
+	for _, tt := range tests {
+		got := formatBytes(tt.input)
+		if got != tt.want {
+			t.Errorf("formatBytes(%d) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestDirSize(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create some files with known sizes
+	if err := os.WriteFile(filepath.Join(tmpDir, "a.txt"), make([]byte, 100), 0644); err != nil {
+		t.Fatal(err)
+	}
+	subDir := filepath.Join(tmpDir, "sub")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "b.txt"), make([]byte, 200), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	size := dirSize(tmpDir)
+	if size != 300 {
+		t.Errorf("dirSize = %d, want 300", size)
+	}
+}
+
+func TestDirSize_EmptyDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	size := dirSize(tmpDir)
+	if size != 0 {
+		t.Errorf("dirSize of empty dir = %d, want 0", size)
+	}
+}
+
+func TestDirSize_NonexistentDir(t *testing.T) {
+	size := dirSize("/nonexistent/path/that/does/not/exist")
+	if size != 0 {
+		t.Errorf("dirSize of nonexistent dir = %d, want 0", size)
+	}
+}
+
+func TestGetHealthMetrics_NoServer(t *testing.T) {
+	townRoot := t.TempDir()
+
+	// Create .dolt-data dir with some content
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "testfile"), make([]byte, 1024), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	metrics := GetHealthMetrics(townRoot)
+
+	// With no server running, connections and latency should be zero
+	if metrics.Connections != 0 {
+		t.Errorf("Connections = %d, want 0 (no server)", metrics.Connections)
+	}
+	if metrics.QueryLatency != 0 {
+		t.Errorf("QueryLatency = %v, want 0 (no server)", metrics.QueryLatency)
+	}
+
+	// Disk usage should reflect our test file
+	if metrics.DiskUsageBytes < 1024 {
+		t.Errorf("DiskUsageBytes = %d, want >= 1024", metrics.DiskUsageBytes)
+	}
+	if metrics.DiskUsageHuman == "" {
+		t.Error("DiskUsageHuman should not be empty")
+	}
+
+	// MaxConnections should have a default
+	if metrics.MaxConnections <= 0 {
+		t.Errorf("MaxConnections = %d, want > 0", metrics.MaxConnections)
+	}
+}
+
+func TestGetHealthMetrics_EmptyDataDir(t *testing.T) {
+	townRoot := t.TempDir()
+
+	metrics := GetHealthMetrics(townRoot)
+
+	if metrics.DiskUsageBytes != 0 {
+		t.Errorf("DiskUsageBytes = %d, want 0 (no data dir)", metrics.DiskUsageBytes)
+	}
+	if metrics.DiskUsageHuman != "0 B" {
+		t.Errorf("DiskUsageHuman = %q, want %q", metrics.DiskUsageHuman, "0 B")
+	}
+}
+
 func TestFindMigratableDatabases_FollowsRedirect(t *testing.T) {
 	// Setup: simulate a town with a rig that uses a redirect
 	townRoot := t.TempDir()

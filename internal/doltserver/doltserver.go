@@ -847,6 +847,134 @@ func HasConnectionCapacity(townRoot string) (bool, int, error) {
 	return active < threshold, active, nil
 }
 
+// HealthMetrics holds resource monitoring data for the Dolt server.
+type HealthMetrics struct {
+	// Connections is the number of active connections (from information_schema.PROCESSLIST).
+	Connections int `json:"connections"`
+
+	// MaxConnections is the configured maximum connections.
+	MaxConnections int `json:"max_connections"`
+
+	// ConnectionPct is the percentage of max connections in use.
+	ConnectionPct float64 `json:"connection_pct"`
+
+	// DiskUsageBytes is the total size of the .dolt-data/ directory.
+	DiskUsageBytes int64 `json:"disk_usage_bytes"`
+
+	// DiskUsageHuman is a human-readable disk usage string.
+	DiskUsageHuman string `json:"disk_usage_human"`
+
+	// QueryLatency is the time taken for a SELECT 1 round-trip.
+	QueryLatency time.Duration `json:"query_latency_ms"`
+
+	// Healthy indicates whether the server is within acceptable resource limits.
+	Healthy bool `json:"healthy"`
+
+	// Warnings contains any degradation warnings (non-fatal).
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// GetHealthMetrics collects resource monitoring metrics from the Dolt server.
+// Returns partial metrics if some checks fail — always returns what it can.
+func GetHealthMetrics(townRoot string) *HealthMetrics {
+	config := DefaultConfig(townRoot)
+	metrics := &HealthMetrics{
+		Healthy:        true,
+		MaxConnections: config.MaxConnections,
+	}
+	if metrics.MaxConnections <= 0 {
+		metrics.MaxConnections = 1000 // Dolt default
+	}
+
+	// 1. Query latency: time a SELECT 1
+	latency, err := MeasureQueryLatency(townRoot)
+	if err == nil {
+		metrics.QueryLatency = latency
+		if latency > 1*time.Second {
+			metrics.Warnings = append(metrics.Warnings,
+				fmt.Sprintf("query latency %v exceeds 1s threshold — server may be under stress", latency.Round(time.Millisecond)))
+		}
+	}
+
+	// 2. Connection count
+	connCount, err := GetActiveConnectionCount(townRoot)
+	if err == nil {
+		metrics.Connections = connCount
+		metrics.ConnectionPct = float64(connCount) / float64(metrics.MaxConnections) * 100
+		if metrics.ConnectionPct >= 80 {
+			metrics.Healthy = false
+			metrics.Warnings = append(metrics.Warnings,
+				fmt.Sprintf("connection count %d is %.0f%% of max %d — approaching limit",
+					connCount, metrics.ConnectionPct, metrics.MaxConnections))
+		}
+	}
+
+	// 3. Disk usage
+	diskBytes := dirSize(config.DataDir)
+	metrics.DiskUsageBytes = diskBytes
+	metrics.DiskUsageHuman = formatBytes(diskBytes)
+
+	return metrics
+}
+
+// MeasureQueryLatency times a SELECT 1 query against the Dolt server.
+func MeasureQueryLatency(townRoot string) (time.Duration, error) {
+	config := DefaultConfig(townRoot)
+
+	start := time.Now()
+	cmd := exec.Command("dolt",
+		"sql",
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(config.Port),
+		"--user", config.User,
+		"--no-auto-commit",
+		"-q", "SELECT 1",
+	)
+	cmd.Dir = config.DataDir
+	output, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
+
+	if err != nil {
+		return 0, fmt.Errorf("SELECT 1 failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
+	}
+
+	return elapsed, nil
+}
+
+// dirSize returns the total size of a directory tree in bytes.
+func dirSize(path string) int64 {
+	var total int64
+	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip errors
+		}
+		if !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// formatBytes returns a human-readable size string.
+func formatBytes(b int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+	switch {
+	case b >= GB:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(GB))
+	case b >= MB:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(MB))
+	case b >= KB:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
 // moveDir moves a directory from src to dest. It first tries os.Rename for
 // efficiency, but falls back to copy+delete if src and dest are on different
 // filesystems (which causes EXDEV error on rename).
