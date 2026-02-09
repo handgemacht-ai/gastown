@@ -1331,6 +1331,7 @@ func (f *LiveConvoyFetcher) FetchSessions() ([]SessionRow, error) {
 			continue
 		}
 
+		// SplitN always returns >= 1 element; parts[0] is safe unconditionally
 		parts := strings.SplitN(line, ":", 2)
 		name := parts[0]
 
