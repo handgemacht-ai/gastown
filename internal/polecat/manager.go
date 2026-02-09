@@ -813,6 +813,12 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 		}
 	}
 
+	// Run teardown hooks before removing the worktree.
+	// This allows services (e.g., Docker) to be stopped while the worktree still exists.
+	if err := rig.RunTeardownHooks(m.rig.Path, clonePath); err != nil {
+		fmt.Printf("Warning: could not run teardown hooks: %v\n", err)
+	}
+
 	// Get repo base to remove the worktree properly
 	repoGit, err := m.repoBase()
 	if err != nil {

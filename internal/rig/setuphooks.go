@@ -92,6 +92,59 @@ func RunSetupHooks(rigPath, worktreePath string) error {
 	return nil
 }
 
+// RunTeardownHooks executes teardown hooks found in <rigPath>/.runtime/teardown-hooks/.
+// These hooks run before the worktree is removed, allowing services (e.g., Docker)
+// to be stopped cleanly while the worktree still exists.
+//
+// Same conventions as RunSetupHooks: alphabetical order, executable, non-fatal.
+func RunTeardownHooks(rigPath, worktreePath string) error {
+	hooksDir := filepath.Join(rigPath, ".runtime", "teardown-hooks")
+
+	entries, err := os.ReadDir(hooksDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading teardown-hooks dir: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		hookPath := filepath.Join(hooksDir, entry.Name())
+
+		info, err := entry.Info()
+		if err != nil {
+			fmt.Printf("Warning: could not stat hook %s: %v\n", entry.Name(), err)
+			continue
+		}
+
+		if info.Mode().Perm()&0111 == 0 {
+			fmt.Printf("Warning: skipping non-executable hook %s (use chmod +x to make it executable)\n", entry.Name())
+			continue
+		}
+
+		if err := runHook(hookPath, worktreePath); err != nil {
+			fmt.Printf("Warning: teardown hook %s failed: %v\n", entry.Name(), err)
+			continue
+		}
+
+		fmt.Printf("Ran teardown hook: %s\n", entry.Name())
+	}
+
+	return nil
+}
+
 // runHook executes a single hook script in the context of the worktree.
 // The hook is run with:
 // - Working directory set to worktreePath
