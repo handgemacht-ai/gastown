@@ -866,9 +866,11 @@ type DetectZombiePolecatsResult struct {
 }
 
 // DetectZombiePolecats cross-references polecat agent state with tmux session
-// existence to find zombie polecats. A zombie is a polecat whose tmux session
-// is dead but whose agent bead still shows agent_state="working", "running",
-// or "spawning", or has a hook_bead assigned.
+// existence and agent process liveness to find zombie polecats. Two zombie classes:
+//   - Session-dead: tmux session is dead but agent bead still shows agent_state=
+//     "working", "running", or "spawning", or has a hook_bead assigned.
+//   - Agent-dead: tmux session exists but the agent process (Claude/node) inside
+//     it has died. Detected via IsAgentAlive. See gt-kj6r6.
 //
 // Zombies cannot send POLECAT_DONE or other signals, so they sit undetected
 // by the reactive signal-based patrol. This function provides proactive detection.
@@ -946,6 +948,24 @@ func DetectZombiePolecats(workDir, rigName string, router *mail.Router) *DetectZ
 				if err := NukePolecat(workDir, rigName, polecatName); err != nil {
 					zombie.Error = err
 					zombie.Action = fmt.Sprintf("kill-stuck-session-failed: %v", err)
+				}
+				result.Zombies = append(result.Zombies, zombie)
+				continue
+			}
+
+			// Tmux session exists but agent process may have died inside it.
+			// This catches the "tmux-alive-but-agent-dead" zombie class that
+			// status.go detects but DetectZombiePolecats previously missed.
+			// See: gt-kj6r6
+			if !t.IsAgentAlive(sessionName) {
+				zombie := ZombieResult{
+					PolecatName: polecatName,
+					AgentState:  "agent-dead-in-session",
+					Action:      "killed-agent-dead-session",
+				}
+				if err := NukePolecat(workDir, rigName, polecatName); err != nil {
+					zombie.Error = err
+					zombie.Action = fmt.Sprintf("kill-agent-dead-session-failed: %v", err)
 				}
 				result.Zombies = append(result.Zombies, zombie)
 			}

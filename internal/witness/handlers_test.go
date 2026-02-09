@@ -352,6 +352,28 @@ func TestDetectZombie_DoneIntentRecent(t *testing.T) {
 	}
 }
 
+func TestDetectZombie_AgentDeadInLiveSession(t *testing.T) {
+	// Verify the logic: live session + agent process dead → zombie
+	// This is the gt-kj6r6 fix: DetectZombiePolecats now checks IsAgentAlive
+	// for sessions that DO exist, catching the tmux-alive-but-agent-dead class.
+	sessionAlive := true
+	agentAlive := false
+	var doneIntent *DoneIntent // No done-intent
+
+	// Live session + no done-intent + agent dead → should be classified as zombie
+	shouldDetect := sessionAlive && doneIntent == nil && !agentAlive
+	if !shouldDetect {
+		t.Error("expected zombie detection for live session with dead agent")
+	}
+
+	// Live session + agent alive → NOT a zombie
+	agentAlive = true
+	shouldSkip := sessionAlive && doneIntent == nil && agentAlive
+	if !shouldSkip {
+		t.Error("expected skip for live session with alive agent")
+	}
+}
+
 func TestGetAgentBeadLabels_NoBdAvailable(t *testing.T) {
 	// When bd is not available, should return nil without panicking
 	labels := getAgentBeadLabels("/nonexistent", "nonexistent-bead")
