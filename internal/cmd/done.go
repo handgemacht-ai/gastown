@@ -601,6 +601,11 @@ notifyWitness:
 		// write directly to main instead of the now-deleted branch.
 		os.Unsetenv("BD_BRANCH")
 	}
+	// Polecat sessions run with BD_DOLT_AUTO_COMMIT=off to reduce contention
+	// while writing to an isolated branch. After we switch to main in gt done,
+	// re-enable auto-commit so post-merge bd writes don't leave main dirty and
+	// block later DOLT_MERGE calls.
+	restoreBeadsAutoCommitAfterMerge()
 
 	// Notify Witness about completion
 	// Use town-level beads for cross-agent mail
@@ -951,6 +956,15 @@ func parseCleanupStatus(s string) polecat.CleanupStatus {
 		return polecat.CleanupUnpushed
 	default:
 		return polecat.CleanupUnknown
+	}
+}
+
+// restoreBeadsAutoCommitAfterMerge turns Dolt auto-commit back on after gt done
+// finishes branch merge handling. This keeps post-merge writes from leaving main
+// in a dirty working set.
+func restoreBeadsAutoCommitAfterMerge() {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("BD_DOLT_AUTO_COMMIT")), "off") {
+		_ = os.Setenv("BD_DOLT_AUTO_COMMIT", "on")
 	}
 }
 

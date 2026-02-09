@@ -345,6 +345,32 @@ func TestGetIssueFromAgentHook(t *testing.T) {
 	}
 }
 
+func TestRestoreBeadsAutoCommitAfterMerge(t *testing.T) {
+	t.Run("turns off to on", func(t *testing.T) {
+		t.Setenv("BD_DOLT_AUTO_COMMIT", "off")
+		restoreBeadsAutoCommitAfterMerge()
+		if got := os.Getenv("BD_DOLT_AUTO_COMMIT"); got != "on" {
+			t.Fatalf("BD_DOLT_AUTO_COMMIT = %q, want on", got)
+		}
+	})
+
+	t.Run("preserves on", func(t *testing.T) {
+		t.Setenv("BD_DOLT_AUTO_COMMIT", "on")
+		restoreBeadsAutoCommitAfterMerge()
+		if got := os.Getenv("BD_DOLT_AUTO_COMMIT"); got != "on" {
+			t.Fatalf("BD_DOLT_AUTO_COMMIT = %q, want on", got)
+		}
+	})
+
+	t.Run("leaves empty unset", func(t *testing.T) {
+		t.Setenv("BD_DOLT_AUTO_COMMIT", "")
+		restoreBeadsAutoCommitAfterMerge()
+		if got := os.Getenv("BD_DOLT_AUTO_COMMIT"); got != "" {
+			t.Fatalf("BD_DOLT_AUTO_COMMIT = %q, want empty", got)
+		}
+	})
+}
+
 // TestIsPolecatActor verifies that isPolecatActor correctly identifies
 // polecat actors vs other roles based on the BD_ACTOR format.
 func TestIsPolecatActor(t *testing.T) {
