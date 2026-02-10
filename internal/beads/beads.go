@@ -59,6 +59,16 @@ type Issue struct {
 	Dependents   []IssueDep `json:"dependents,omitempty"`
 }
 
+// HasLabel checks if an issue has a specific label.
+func HasLabel(issue *Issue, label string) bool {
+	for _, l := range issue.Labels {
+		if l == label {
+			return true
+		}
+	}
+	return false
+}
+
 // IssueDep represents a dependency or dependent issue with its relation.
 type IssueDep struct {
 	ID             string `json:"id"`

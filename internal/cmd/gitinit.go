@@ -117,7 +117,7 @@ logs/
 # =============================================================================
 # Explicitly track (override above patterns)
 # =============================================================================
-# Note: .beads/ has its own .gitignore that handles SQLite files
+# Note: .beads/ has its own .gitignore that handles database files
 # and keeps issues.jsonl, metadata.json, config file as source of truth
 `
 

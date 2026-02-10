@@ -37,12 +37,16 @@ type HandlerResult struct {
 // For COMPLETED exits with MR and clean state, auto-nukes immediately (ephemeral model).
 // For exits with pending MR but dirty state, creates cleanup wisp for manual intervention.
 //
+// When a pending MR exists, sends MERGE_READY to the Refinery to trigger
+// immediate merge queue processing. This ensures work flows through the system
+// without waiting for the daemon's heartbeat cycle.
+//
 // Ephemeral Polecat Model:
 // Polecats are truly ephemeral - done at MR submission, recyclable immediately.
 // Once the branch is pushed (cleanup_status=clean), the polecat can be nuked.
 // The MR lifecycle continues independently in the Refinery.
 // If conflicts arise, Refinery creates a NEW conflict-resolution task for a NEW polecat.
-func HandlePolecatDone(workDir, rigName string, msg *mail.Message) *HandlerResult {
+func HandlePolecatDone(workDir, rigName string, msg *mail.Message, router *mail.Router) *HandlerResult {
 	result := &HandlerResult{
 		MessageID:    msg.ID,
 		ProtocolType: ProtoPolecatDone,
@@ -94,9 +98,30 @@ func HandlePolecatDone(workDir, rigName string, msg *mail.Message) *HandlerResul
 			result.Error = fmt.Errorf("updating wisp state: %w", err)
 		}
 
+		// Send MERGE_READY to Refinery to trigger immediate processing.
+		// This is the canonical signal that keeps work flowing through the system
+		// without waiting for the daemon's heartbeat cycle.
+		if router != nil {
+			mailID, err := sendMergeReady(router, rigName, payload)
+			if err != nil {
+				// Non-fatal - Refinery will still pick up work on next patrol cycle
+				result.Error = fmt.Errorf("sending MERGE_READY: %w (non-fatal)", err)
+			} else {
+				result.MailSent = mailID
+
+				// Nudge the refinery to check its inbox immediately.
+				if nudgeErr := nudgeRefinery(rigName); nudgeErr != nil {
+					// Non-fatal - refinery will still pick up on next cycle
+					if result.Error == nil {
+						result.Error = fmt.Errorf("nudging refinery: %w (non-fatal)", nudgeErr)
+					}
+				}
+			}
+		}
+
 		result.Handled = true
 		result.WispCreated = wispID
-		result.Action = fmt.Sprintf("deferred cleanup for %s (pending MR=%s, local branch preserved for conflict resolution)", payload.PolecatName, payload.MRID)
+		result.Action = fmt.Sprintf("deferred cleanup for %s (pending MR=%s, MERGE_READY sent to refinery)", payload.PolecatName, payload.MRID)
 		return result
 	}
 
@@ -570,6 +595,58 @@ func getCleanupStatus(workDir, rigName, polecatName string) string {
 	return ""
 }
 
+// sendMergeReady sends a MERGE_READY notification to the Refinery.
+// This signals that a polecat's work is ready for merge queue processing.
+func sendMergeReady(router *mail.Router, rigName string, payload *PolecatDonePayload) (string, error) {
+	msg := mail.NewMessage(
+		fmt.Sprintf("%s/witness", rigName),
+		fmt.Sprintf("%s/refinery", rigName),
+		fmt.Sprintf("MERGE_READY %s", payload.PolecatName),
+		fmt.Sprintf(`Branch: %s
+Issue: %s
+MR: %s
+Polecat: %s
+Verified: clean git state`,
+			payload.Branch,
+			payload.IssueID,
+			payload.MRID,
+			payload.PolecatName,
+		),
+	)
+	msg.Priority = mail.PriorityHigh
+	msg.Type = mail.TypeTask
+
+	if err := router.Send(msg); err != nil {
+		return "", err
+	}
+
+	return msg.ID, nil
+}
+
+// nudgeRefinery sends a nudge to the refinery session to wake it up.
+// This ensures the refinery processes MERGE_READY mail immediately
+// rather than waiting for its next patrol cycle or daemon heartbeat.
+func nudgeRefinery(rigName string) error {
+	t := tmux.NewTmux()
+	sessionName := fmt.Sprintf("gt-%s-refinery", rigName)
+
+	// Check if refinery is running
+	running, err := t.HasSession(sessionName)
+	if err != nil {
+		return fmt.Errorf("checking refinery session: %w", err)
+	}
+
+	if !running {
+		// Refinery not running - daemon will start it on next heartbeat.
+		// The MERGE_READY mail will be waiting in its inbox.
+		return nil
+	}
+
+	// Nudge the running refinery to check its inbox
+	nudgeMsg := "MERGE_READY received - check inbox for pending work"
+	return t.NudgeSession(sessionName, nudgeMsg)
+}
+
 // escalateToDeacon sends an escalation mail to the Deacon for routine operational issues.
 // The Deacon is the first line of escalation for witness operations. Only truly strategic
 // issues (deacon down, cross-rig coordination) should go directly to Mayor.
@@ -661,14 +738,8 @@ func UpdateCleanupWispState(workDir, wispID, newState string) error {
 		return fmt.Errorf("getting wisp: %w", err)
 	}
 
-	// Extract polecat name from existing labels for the update
-	var polecatName string
-	if idx := strings.Index(output, `polecat:`); idx >= 0 {
-		rest := output[idx+8:]
-		if endIdx := strings.IndexAny(rest, `",]}`); endIdx > 0 {
-			polecatName = rest[:endIdx]
-		}
-	}
+	// Extract polecat name from existing labels via JSON parsing
+	polecatName := extractPolecatFromJSON(output)
 
 	if polecatName == "" {
 		polecatName = "unknown"
@@ -678,6 +749,23 @@ func UpdateCleanupWispState(workDir, wispID, newState string) error {
 	newLabels := strings.Join(CleanupWispLabels(polecatName, newState), ",")
 
 	return util.ExecRun(workDir, "bd", "update", wispID, "--labels", newLabels)
+}
+
+// extractPolecatFromJSON extracts the polecat name from bd show --json output.
+// Returns empty string if the output is malformed or no polecat label is found.
+func extractPolecatFromJSON(output string) string {
+	var items []struct {
+		Labels []string `json:"labels"`
+	}
+	if err := json.Unmarshal([]byte(output), &items); err != nil || len(items) == 0 {
+		return ""
+	}
+	for _, label := range items[0].Labels {
+		if name, ok := strings.CutPrefix(label, "polecat:"); ok {
+			return name
+		}
+	}
+	return ""
 }
 
 // NukePolecat executes the actual nuke operation for a polecat.

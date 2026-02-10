@@ -650,7 +650,7 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check for tracked beads and initialize beads.db if missing (Issue #72)
+	// Check for tracked beads and initialize database if missing (Issue #72)
 	rigPath := filepath.Join(townRoot, name)
 	beadsDirCandidates := []string{
 		filepath.Join(rigPath, ".beads"),
@@ -688,23 +688,22 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 			f.Close()
 		}
 
-		// Init beads.db if missing
-		beadsDB := filepath.Join(beadsDir, "beads.db")
-		if _, err := os.Stat(beadsDB); os.IsNotExist(err) {
+		// Init database if metadata.json is missing (DB files are gitignored)
+		metadataPath := filepath.Join(beadsDir, "metadata.json")
+		if _, err := os.Stat(metadataPath); os.IsNotExist(err) {
 			prefix := result.BeadsPrefix
 			if prefix == "" {
 				break
 			}
-			// Remove stale WAL/SHM files that could cause SQLite errors
-			os.Remove(filepath.Join(beadsDir, "beads.db-wal"))
-			os.Remove(filepath.Join(beadsDir, "beads.db-shm"))
 			workDir := filepath.Dir(beadsDir) // directory containing .beads/
-			initCmd := exec.Command("bd", "--no-daemon", "init", "--prefix", prefix)
+			// IMPORTANT: Use --backend dolt --server to prevent SQLite creation.
+			// Gas Town rigs use Dolt server mode via the shared town Dolt sql-server.
+			initCmd := exec.Command("bd", "--no-daemon", "init", "--prefix", prefix, "--backend", "dolt", "--server")
 			initCmd.Dir = workDir
 			if output, initErr := initCmd.CombinedOutput(); initErr != nil {
 				fmt.Printf("  %s Could not init bd database: %v (%s)\n", style.Warning.Render("!"), initErr, strings.TrimSpace(string(output)))
 			} else {
-				fmt.Printf("  %s Initialized beads database\n", style.Success.Render("✓"))
+				fmt.Printf("  %s Initialized beads database (Dolt)\n", style.Success.Render("✓"))
 			}
 		}
 		break
@@ -1166,7 +1165,7 @@ func runRigShutdown(cmd *cobra.Command, args []string) error {
 	// 1. Stop all polecat sessions
 	t := tmux.NewTmux()
 	polecatMgr := polecat.NewSessionManager(t, r)
-	infos, err := polecatMgr.List()
+	infos, err := polecatMgr.ListPolecats()
 	if err == nil && len(infos) > 0 {
 		fmt.Printf("  Stopping %d polecat session(s)...\n", len(infos))
 		if err := polecatMgr.StopAll(rigShutdownForce); err != nil {
@@ -1319,9 +1318,20 @@ func runRigStatus(cmd *cobra.Command, args []string) error {
 				sessionIcon = style.Success.Render("●")
 			}
 
-			stateStr := string(p.State)
+			// Reconcile display state with tmux session liveness.
+			// Per gt-zecmc design: tmux is ground truth for observable states.
+			// If session is running but beads says done, the polecat is still alive.
+			// If session is dead but beads says working, the polecat is actually done.
+			displayState := p.State
+			if hasSession && displayState == polecat.StateDone {
+				displayState = polecat.StateWorking
+			} else if !hasSession && displayState.IsActive() {
+				displayState = polecat.StateDone
+			}
+
+			stateStr := string(displayState)
 			if p.Issue != "" {
-				stateStr = fmt.Sprintf("%s → %s", p.State, p.Issue)
+				stateStr = fmt.Sprintf("%s → %s", displayState, p.Issue)
 			}
 
 			fmt.Printf("  %s %s: %s\n", sessionIcon, p.Name, stateStr)
@@ -1433,7 +1443,7 @@ func runRigStop(cmd *cobra.Command, args []string) error {
 		// 1. Stop all polecat sessions
 		t := tmux.NewTmux()
 		polecatMgr := polecat.NewSessionManager(t, r)
-		infos, err := polecatMgr.List()
+		infos, err := polecatMgr.ListPolecats()
 		if err == nil && len(infos) > 0 {
 			fmt.Printf("  Stopping %d polecat session(s)...\n", len(infos))
 			if err := polecatMgr.StopAll(rigStopForce); err != nil {
@@ -1564,7 +1574,7 @@ func runRigRestart(cmd *cobra.Command, args []string) error {
 
 		// 1. Stop all polecat sessions
 		polecatMgr := polecat.NewSessionManager(t, r)
-		infos, err := polecatMgr.List()
+		infos, err := polecatMgr.ListPolecats()
 		if err == nil && len(infos) > 0 {
 			fmt.Printf("    Stopping %d polecat session(s)...\n", len(infos))
 			if err := polecatMgr.StopAll(rigRestartForce); err != nil {

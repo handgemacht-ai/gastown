@@ -528,7 +528,7 @@ func runDoltMigrate(cmd *cobra.Command, args []string) error {
 	// Check if daemon is running - must stop first to avoid race conditions.
 	// The daemon spawns many bd processes via gt status heartbeats. If these
 	// run concurrently with migration, race conditions occur between old
-	// SQLite and new Dolt backends.
+	// old and new backends.
 	daemonRunning, _, _ := daemon.IsRunning(townRoot)
 	if daemonRunning {
 		return fmt.Errorf("Gas Town daemon is running. Stop it first with: gt daemon stop\n\nThe daemon spawns bd processes that can race with migration.\nStop the daemon, run migration, then restart it.")
@@ -790,7 +790,7 @@ func runDoltRollback(cmd *cobra.Command, args []string) error {
 	validateCmd.Dir = townRoot
 	output, validateErr := validateCmd.CombinedOutput()
 	if validateErr != nil {
-		fmt.Printf("  %s bd list returned an error (this may be expected if reverting to SQLite): %v\n",
+		fmt.Printf("  %s bd list returned an error: %v\n",
 			style.Dim.Render("⚠"), validateErr)
 		if len(output) > 0 {
 			fmt.Printf("  %s\n", string(output))

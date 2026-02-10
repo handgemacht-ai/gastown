@@ -362,15 +362,14 @@ func (b *Beads) ResetAgentBeadForReuse(id, reason string) error {
 // Optionally updates hook_bead if provided.
 //
 // IMPORTANT: This function uses the proper bd commands to update agent fields:
-// - `bd agent state` for agent_state (uses SQLite column directly)
-// - `bd slot set/clear` for hook_bead (uses SQLite column directly)
+// - `bd agent state` for agent_state (uses the database column directly)
+// - `bd slot set/clear` for hook_bead (uses the database column directly)
 //
 // This ensures consistency with `bd slot show` and other beads commands.
 // Previously, this function embedded these fields in the description text,
 // which caused inconsistencies with bd slot commands (see GH #gt-9v52).
 func (b *Beads) UpdateAgentState(id string, state string, hookBead *string) error {
 	// Update agent state using bd agent state command
-	// This updates the agent_state column directly in SQLite
 	_, err := b.run("agent", "state", id, state)
 	if err != nil {
 		return fmt.Errorf("updating agent state: %w", err)
@@ -380,7 +379,6 @@ func (b *Beads) UpdateAgentState(id string, state string, hookBead *string) erro
 	if hookBead != nil {
 		if *hookBead != "" {
 			// Set the hook using bd slot set
-			// This updates the hook_bead column directly in SQLite
 			_, err = b.run("slot", "set", id, "hook", *hookBead)
 			if err != nil {
 				// If slot is already occupied, clear it first then retry
@@ -412,7 +410,6 @@ func (b *Beads) UpdateAgentState(id string, state string, hookBead *string) erro
 // and should not be recorded in beads ("discover, don't track" principle).
 func (b *Beads) SetHookBead(agentBeadID, hookBeadID string) error {
 	// Set the hook using bd slot set
-	// This updates the hook_bead column directly in SQLite
 	_, err := b.run("slot", "set", agentBeadID, "hook", hookBeadID)
 	if err != nil {
 		// If slot is already occupied, clear it first then retry
@@ -531,13 +528,13 @@ func (b *Beads) GetAgentNotificationLevel(id string) (string, error) {
 // DeleteAgentBead permanently deletes an agent bead.
 // Uses --hard --force for immediate permanent deletion (no tombstone).
 //
+// Deprecated: Agent beads represent persistent identity and should never be
+// hard-deleted. Use ResetAgentBeadForReuse instead, which preserves the CV
+// chain across assignments. This function remains only for test cleanup.
+//
 // WARNING: Due to a bd bug, --hard --force still creates tombstones instead of
 // truly deleting. This breaks CreateOrReopenAgentBead because tombstones are
 // invisible to bd show/reopen but still block bd create via UNIQUE constraint.
-//
-//
-// WORKAROUND: Use CloseAndClearAgentBead instead, which allows CreateOrReopenAgentBead
-// to reopen the bead on re-spawn.
 func (b *Beads) DeleteAgentBead(id string) error {
 	_, err := b.run("delete", id, "--hard", "--force")
 	return err

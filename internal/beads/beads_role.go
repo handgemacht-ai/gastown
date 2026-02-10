@@ -95,16 +95,6 @@ func (b *Beads) GetRoleConfig(roleBeadID string) (*RoleConfig, error) {
 	return ParseRoleConfig(issue.Description), nil
 }
 
-// HasLabel checks if an issue has a specific label.
-func HasLabel(issue *Issue, label string) bool {
-	for _, l := range issue.Labels {
-		if l == label {
-			return true
-		}
-	}
-	return false
-}
-
 // RoleBeadDef defines a role bead's metadata.
 //
 // Deprecated: Role beads are no longer created. Role definitions are

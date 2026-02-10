@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,6 +69,15 @@ type TownSettings struct {
 	// Agent addresses like "gastown/crew/jack" become "gastown.crew.jack@{domain}".
 	// Default: "gastown.local"
 	AgentEmailDomain string `json:"agent_email_domain,omitempty"`
+
+	// WebTimeouts configures command execution timeouts for the web dashboard.
+	WebTimeouts *WebTimeoutsConfig `json:"web_timeouts,omitempty"`
+
+	// WorkerStatus configures activity-age thresholds for worker status classification.
+	WorkerStatus *WorkerStatusConfig `json:"worker_status,omitempty"`
+
+	// FeedCurator configures event deduplication and aggregation windows.
+	FeedCurator *FeedCuratorConfig `json:"feed_curator,omitempty"`
 }
 
 // NewTownSettings creates a new TownSettings with defaults.
@@ -79,6 +89,94 @@ func NewTownSettings() *TownSettings {
 		Agents:       make(map[string]*RuntimeConfig),
 		RoleAgents:   make(map[string]string),
 	}
+}
+
+// WebTimeoutsConfig configures command execution timeouts for the web dashboard.
+type WebTimeoutsConfig struct {
+	// CmdTimeout is the timeout for bd (beads) commands. Default: "15s".
+	CmdTimeout string `json:"cmd_timeout,omitempty"`
+	// GhCmdTimeout is the timeout for GitHub API commands. Default: "10s".
+	GhCmdTimeout string `json:"gh_cmd_timeout,omitempty"`
+	// TmuxCmdTimeout is the timeout for tmux queries. Default: "2s".
+	TmuxCmdTimeout string `json:"tmux_cmd_timeout,omitempty"`
+	// FetchTimeout is the maximum time for all dashboard data fetches. Default: "8s".
+	FetchTimeout string `json:"fetch_timeout,omitempty"`
+	// DefaultRunTimeout is the default timeout for /api/run commands. Default: "30s".
+	DefaultRunTimeout string `json:"default_run_timeout,omitempty"`
+	// MaxRunTimeout is the maximum allowed timeout for /api/run commands. Default: "60s".
+	MaxRunTimeout string `json:"max_run_timeout,omitempty"`
+}
+
+// DefaultWebTimeoutsConfig returns a WebTimeoutsConfig with sensible defaults.
+func DefaultWebTimeoutsConfig() *WebTimeoutsConfig {
+	return &WebTimeoutsConfig{
+		CmdTimeout:        "15s",
+		GhCmdTimeout:      "10s",
+		TmuxCmdTimeout:    "2s",
+		FetchTimeout:      "8s",
+		DefaultRunTimeout: "30s",
+		MaxRunTimeout:     "60s",
+	}
+}
+
+// WorkerStatusConfig configures activity-age thresholds for worker status classification.
+type WorkerStatusConfig struct {
+	// StaleThreshold is the activity age after which a worker is considered "stale".
+	// Default: "5m".
+	StaleThreshold string `json:"stale_threshold,omitempty"`
+	// StuckThreshold is the activity age after which a worker is considered "stuck".
+	// Default: "30m".
+	StuckThreshold string `json:"stuck_threshold,omitempty"`
+	// HeartbeatFreshThreshold is the max age for a Deacon heartbeat to be considered fresh.
+	// Default: "5m".
+	HeartbeatFreshThreshold string `json:"heartbeat_fresh_threshold,omitempty"`
+	// MayorActiveThreshold is the max session inactivity for the Mayor to be considered active.
+	// Default: "5m".
+	MayorActiveThreshold string `json:"mayor_active_threshold,omitempty"`
+}
+
+// DefaultWorkerStatusConfig returns a WorkerStatusConfig with sensible defaults.
+func DefaultWorkerStatusConfig() *WorkerStatusConfig {
+	return &WorkerStatusConfig{
+		StaleThreshold:          "5m",
+		StuckThreshold:          "30m",
+		HeartbeatFreshThreshold: "5m",
+		MayorActiveThreshold:    "5m",
+	}
+}
+
+// FeedCuratorConfig configures event deduplication and aggregation windows.
+type FeedCuratorConfig struct {
+	// DoneDedupeWindow is the time window for deduplicating repeated done events.
+	// Default: "10s".
+	DoneDedupeWindow string `json:"done_dedupe_window,omitempty"`
+	// SlingAggregateWindow is the time window for aggregating sling events.
+	// Default: "30s".
+	SlingAggregateWindow string `json:"sling_aggregate_window,omitempty"`
+	// MinAggregateCount is the minimum number of events to trigger aggregation.
+	// Default: 3.
+	MinAggregateCount int `json:"min_aggregate_count,omitempty"`
+}
+
+// DefaultFeedCuratorConfig returns a FeedCuratorConfig with sensible defaults.
+func DefaultFeedCuratorConfig() *FeedCuratorConfig {
+	return &FeedCuratorConfig{
+		DoneDedupeWindow:     "10s",
+		SlingAggregateWindow: "30s",
+		MinAggregateCount:    3,
+	}
+}
+
+// ParseDurationOrDefault parses a Go duration string, returning fallback on error or empty input.
+func ParseDurationOrDefault(s string, fallback time.Duration) time.Duration {
+	if s == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fallback
+	}
+	return d
 }
 
 // DaemonConfig represents daemon process settings.
@@ -735,6 +833,12 @@ type MergeQueueConfig struct {
 	// TestCommand is the command to run for tests.
 	TestCommand string `json:"test_command,omitempty"`
 
+	// LintCommand is the command to run for linting (used by formulas).
+	LintCommand string `json:"lint_command,omitempty"`
+
+	// BuildCommand is the command to run for building (used by formulas).
+	BuildCommand string `json:"build_command,omitempty"`
+
 	// DeleteMergedBranches controls whether to delete branches after merging.
 	DeleteMergedBranches bool `json:"delete_merged_branches"`
 
@@ -818,9 +922,12 @@ type Account struct {
 const CurrentAccountsVersion = 1
 
 // DefaultAccountsConfigDir returns the default base directory for account configs.
-func DefaultAccountsConfigDir() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.claude-accounts"
+func DefaultAccountsConfigDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return home + "/.claude-accounts", nil
 }
 
 // MessagingConfig represents the messaging configuration (config/messaging.json).

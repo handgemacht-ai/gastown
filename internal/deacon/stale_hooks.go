@@ -4,10 +4,13 @@ package deacon
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
@@ -46,6 +49,12 @@ type StaleHookResult struct {
 	AgentAlive  bool   `json:"agent_alive"`
 	Unhooked    bool   `json:"unhooked"`
 	Error       string `json:"error,omitempty"`
+	// PartialWork indicates uncommitted changes or unpushed commits were found
+	// in the agent's worktree before unhooking.
+	PartialWork    bool   `json:"partial_work,omitempty"`
+	WorktreeDirty  bool   `json:"worktree_dirty,omitempty"`
+	UnpushedCount  int    `json:"unpushed_count,omitempty"`
+	WorktreeError  string `json:"worktree_error,omitempty"`
 }
 
 // StaleHookScanResult contains the full results of a stale hook scan.
@@ -104,13 +113,17 @@ func ScanStaleHooks(townRoot string, cfg *StaleHookConfig) (*StaleHookScanResult
 			}
 		}
 
-		// If agent is dead/gone and not dry run, unhook the bead
-		if !hookResult.AgentAlive && !cfg.DryRun {
-			if err := unhookBead(townRoot, bead.ID); err != nil {
-				hookResult.Error = err.Error()
-			} else {
-				hookResult.Unhooked = true
-				result.Unhooked++
+		// If agent is dead/gone, check worktree state before unhooking
+		if !hookResult.AgentAlive {
+			checkWorktreeState(townRoot, bead.Assignee, hookResult)
+
+			if !cfg.DryRun {
+				if err := unhookBead(townRoot, bead.ID); err != nil {
+					hookResult.Error = err.Error()
+				} else {
+					hookResult.Unhooked = true
+					result.Unhooked++
+				}
 			}
 		}
 
@@ -185,6 +198,64 @@ func assigneeToSessionName(assignee string) string {
 	default:
 		return ""
 	}
+}
+
+// checkWorktreeState checks an agent's worktree for uncommitted changes or
+// unpushed commits and populates the result fields. This is best-effort;
+// errors are recorded but do not prevent unhooking.
+func checkWorktreeState(townRoot, assignee string, result *StaleHookResult) {
+	worktreePath := assigneeToWorktreePath(townRoot, assignee)
+	if worktreePath == "" {
+		return
+	}
+
+	g := git.NewGit(worktreePath)
+	workStatus, err := g.CheckUncommittedWork()
+	if err != nil {
+		result.WorktreeError = fmt.Sprintf("checking worktree: %v", err)
+		return
+	}
+
+	if !workStatus.CleanExcludingBeads() {
+		result.PartialWork = true
+		result.WorktreeDirty = workStatus.HasUncommittedChanges
+		result.UnpushedCount = workStatus.UnpushedCommits
+	}
+}
+
+// assigneeToWorktreePath resolves an assignee address to its git worktree path.
+// Returns "" if the assignee format is unrecognized or the worktree doesn't exist.
+// Supports polecat format "rig/polecats/name" and crew format "rig/crew/name".
+func assigneeToWorktreePath(townRoot, assignee string) string {
+	parts := strings.Split(assignee, "/")
+	if len(parts) != 3 {
+		return ""
+	}
+
+	rigName, agentType, name := parts[0], parts[1], parts[2]
+	if agentType != "polecats" && agentType != "crew" {
+		return ""
+	}
+
+	rigPath := filepath.Join(townRoot, rigName)
+
+	// New structure: rig/polecats/<name>/<rigname>/
+	newPath := filepath.Join(rigPath, agentType, name, rigName)
+	if info, err := os.Stat(newPath); err == nil && info.IsDir() {
+		if _, err := os.Stat(filepath.Join(newPath, ".git")); err == nil {
+			return newPath
+		}
+	}
+
+	// Old structure: rig/polecats/<name>/
+	oldPath := filepath.Join(rigPath, agentType, name)
+	if info, err := os.Stat(oldPath); err == nil && info.IsDir() {
+		if _, err := os.Stat(filepath.Join(oldPath, ".git")); err == nil {
+			return oldPath
+		}
+	}
+
+	return ""
 }
 
 // unhookBead sets a bead's status back to 'open'.

@@ -253,7 +253,7 @@ func runGroupAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	b := beads.New(townRoot)
-	if err := b.AddGroupMember(name, member); err != nil {
+	if _, err := b.AddGroupMember(name, member); err != nil {
 		return fmt.Errorf("adding member: %w", err)
 	}
 
@@ -271,7 +271,7 @@ func runGroupRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	b := beads.New(townRoot)
-	if err := b.RemoveGroupMember(name, member); err != nil {
+	if _, err := b.RemoveGroupMember(name, member); err != nil {
 		return fmt.Errorf("removing member: %w", err)
 	}
 

@@ -5,8 +5,8 @@
 // Run with: go test -tags=integration ./internal/cmd -run TestBeadsDbInitAfterClone -v
 //
 // Bug: GitHub Issue #72
-// When a repo with tracked .beads/ is added as a rig, beads.db doesn't exist
-// (it's gitignored) and bd operations fail because no one runs `bd init`.
+// When a repo with tracked .beads/ is added as a rig, the database doesn't exist
+// (DB files are gitignored) and bd operations fail because no one runs `bd init`.
 package cmd
 
 import (
@@ -19,9 +19,19 @@ import (
 	"testing"
 )
 
+// extractJSON finds the first JSON object in output that may contain non-JSON warnings.
+// bd --json -q can still emit warnings to stdout before the JSON payload.
+func extractJSON(output []byte) []byte {
+	idx := strings.Index(string(output), "{")
+	if idx < 0 {
+		return output
+	}
+	return output[idx:]
+}
+
 // createTrackedBeadsRepoWithIssues creates a git repo with .beads/ tracked that contains existing issues.
 // This simulates a clone of a repo that has tracked beads with issues exported to issues.jsonl.
-// The beads.db is NOT included (gitignored), so prefix must be detected from config.yaml.
+// The database files are NOT included (gitignored), so prefix must be detected from config.yaml.
 func createTrackedBeadsRepoWithIssues(t *testing.T, path, prefix string, numIssues int) {
 	t.Helper()
 
@@ -98,18 +108,13 @@ func createTrackedBeadsRepoWithIssues(t *testing.T, path, prefix string, numIssu
 		t.Fatalf("git commit beads: %v\n%s", err, out)
 	}
 
-	// Remove beads.db and WAL/SHM files to simulate what a clone would look like
-	// (beads.db and its WAL/SHM files are gitignored, so cloned repos don't have them)
-	dbPath := filepath.Join(beadsDir, "beads.db")
-	if err := os.Remove(dbPath); err != nil {
-		t.Fatalf("remove beads.db: %v", err)
-	}
-	os.Remove(filepath.Join(beadsDir, "beads.db-wal"))
-	os.Remove(filepath.Join(beadsDir, "beads.db-shm"))
+	// Remove database files to simulate what a clone would look like
+	// (database files are gitignored, so cloned repos don't have them)
+	removeDBFiles(t, beadsDir)
 }
 
 // TestBeadsDbInitAfterClone tests that when a tracked beads repo is added as a rig,
-// the beads database is properly initialized even though beads.db doesn't exist.
+// the beads database is properly initialized even though database files don't exist.
 func TestBeadsDbInitAfterClone(t *testing.T) {
 	// Skip if bd is not available
 	if _, err := exec.LookPath("bd"); err != nil {
@@ -120,7 +125,7 @@ func TestBeadsDbInitAfterClone(t *testing.T) {
 	gtBinary := buildGT(t)
 
 	t.Run("TrackedRepoWithExistingPrefix", func(t *testing.T) {
-		// GitHub Issue #72: gt rig add --adopt should detect existing prefix and init beads.db.
+		// GitHub Issue #72: gt rig add --adopt should detect existing prefix and init database.
 		// When a tracked beads repo has config.yaml with a prefix, adopt should detect it.
 
 		townRoot := filepath.Join(tmpDir, "town-prefix-test")
@@ -157,19 +162,19 @@ func TestBeadsDbInitAfterClone(t *testing.T) {
 		}
 
 		// NOW TRY TO USE bd - this is the key test for the bug
-		// Without the fix, beads.db doesn't exist and bd operations fail
+		// Without the fix, the database doesn't exist and bd operations fail
 		cmd = exec.Command("bd", "--no-daemon", "--json", "-q", "create",
 			"--type", "task", "--title", "test-from-rig")
 		cmd.Dir = rigDir
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("bd create failed (bug!): %v\nOutput: %s\n\nThis is the bug: beads.db doesn't exist after clone because bd init was never run", err, output)
+			t.Fatalf("bd create failed (bug!): %v\nOutput: %s\n\nThis is the bug: database doesn't exist after clone because bd init was never run", err, output)
 		}
 
 		var result struct {
 			ID string `json:"id"`
 		}
-		if err := json.Unmarshal(output, &result); err != nil {
+		if err := json.Unmarshal(extractJSON(output), &result); err != nil {
 			t.Fatalf("parse output: %v", err)
 		}
 
@@ -225,7 +230,7 @@ func TestBeadsDbInitAfterClone(t *testing.T) {
 		var result struct {
 			ID string `json:"id"`
 		}
-		if err := json.Unmarshal(output, &result); err != nil {
+		if err := json.Unmarshal(extractJSON(output), &result); err != nil {
 			t.Fatalf("parse output: %v", err)
 		}
 
@@ -301,19 +306,19 @@ func TestBeadsDbInitAfterClone(t *testing.T) {
 			t.Fatalf("gt rig add (no --prefix) failed: %v\nOutput: %s", err, output)
 		}
 
-		// Verify bd operations work - the key test is that beads.db was initialized
+		// Verify bd operations work - the key test is that the database was initialized
 		cmd = exec.Command("bd", "--no-daemon", "--json", "-q", "create",
 			"--type", "task", "--title", "test-derived-prefix")
 		cmd.Dir = rigDir
 		output, err = cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("bd create failed (beads.db not initialized?): %v\nOutput: %s", err, output)
+			t.Fatalf("bd create failed (database not initialized?): %v\nOutput: %s", err, output)
 		}
 
 		var result struct {
 			ID string `json:"id"`
 		}
-		if err := json.Unmarshal(output, &result); err != nil {
+		if err := json.Unmarshal(extractJSON(output), &result); err != nil {
 			t.Fatalf("parse output: %v", err)
 		}
 
@@ -374,7 +379,7 @@ func createTrackedBeadsRepoWithNoIssues(t *testing.T, path, prefix string) {
 		t.Fatalf("mkdir .beads: %v", err)
 	}
 
-	// Run bd init (creates beads.db but no issues)
+	// Run bd init (creates database but no issues)
 	cmd := exec.Command("bd", "--no-daemon", "init", "--prefix", prefix)
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -394,11 +399,24 @@ func createTrackedBeadsRepoWithNoIssues(t *testing.T, path, prefix string) {
 		t.Fatalf("git commit beads: %v\n%s", err, out)
 	}
 
-	// Remove beads.db and WAL/SHM files to simulate what a clone would look like
-	dbPath := filepath.Join(beadsDir, "beads.db")
-	if err := os.Remove(dbPath); err != nil {
-		t.Fatalf("remove beads.db: %v", err)
+	// Remove database files to simulate what a clone would look like
+	removeDBFiles(t, beadsDir)
+}
+
+// removeDBFiles removes database files from a beads directory to simulate a clone.
+// In a clone, DB files are gitignored and not present.
+func removeDBFiles(t *testing.T, beadsDir string) {
+	t.Helper()
+	// Remove metadata.json (the primary indicator of an initialized database)
+	os.Remove(filepath.Join(beadsDir, "metadata.json"))
+	// Remove any legacy or runtime database files
+	patterns := []string{"*.db", "*.db-wal", "*.db-shm", "*.db-journal"}
+	for _, pattern := range patterns {
+		matches, _ := filepath.Glob(filepath.Join(beadsDir, pattern))
+		for _, m := range matches {
+			os.Remove(m)
+		}
 	}
-	os.Remove(filepath.Join(beadsDir, "beads.db-wal"))
-	os.Remove(filepath.Join(beadsDir, "beads.db-shm"))
+	// Remove dolt directory if present
+	os.RemoveAll(filepath.Join(beadsDir, "dolt"))
 }

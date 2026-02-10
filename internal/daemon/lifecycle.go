@@ -752,12 +752,13 @@ func (d *Daemon) getAgentBeadInfo(agentBeadID string) (*AgentBeadInfo, error) {
 
 	// bd show --json returns an array with one element
 	var issues []struct {
-		ID          string `json:"id"`
-		Type        string `json:"issue_type"`
-		Description string `json:"description"`
-		UpdatedAt   string `json:"updated_at"`
-		HookBead    string `json:"hook_bead"`   // Read from database column
-		AgentState  string `json:"agent_state"` // Read from database column
+		ID          string   `json:"id"`
+		Type        string   `json:"issue_type"`
+		Labels      []string `json:"labels"`
+		Description string   `json:"description"`
+		UpdatedAt   string   `json:"updated_at"`
+		HookBead    string   `json:"hook_bead"`   // Read from database column
+		AgentState  string   `json:"agent_state"` // Read from database column
 	}
 
 	if err := json.Unmarshal(output, &issues); err != nil {
@@ -769,7 +770,15 @@ func (d *Daemon) getAgentBeadInfo(agentBeadID string) (*AgentBeadInfo, error) {
 	}
 
 	issue := issues[0]
-	if issue.Type != "agent" {
+	// Check for agent type via gt:agent label (preferred) or legacy type field
+	isAgent := issue.Type == "agent"
+	for _, l := range issue.Labels {
+		if l == "gt:agent" {
+			isAgent = true
+			break
+		}
+	}
+	if !isAgent {
 		return nil, fmt.Errorf("bead %s is not an agent bead (type=%s)", agentBeadID, issue.Type)
 	}
 
@@ -793,6 +802,28 @@ func (d *Daemon) getAgentBeadInfo(agentBeadID string) (*AgentBeadInfo, error) {
 	info.HookBead = issue.HookBead
 
 	return info, nil
+}
+
+// getAgentHookBead re-reads the hook_bead for an agent bead from the database.
+// Used for TOCTOU re-verification before taking destructive action on agents.
+// Returns empty string on error or if no hook_bead is set.
+func (d *Daemon) getAgentHookBead(agentBeadID string) string {
+	cmd := exec.Command(d.bdPath, "show", agentBeadID, "--json")
+	cmd.Dir = d.config.TownRoot
+	cmd.Env = os.Environ()
+
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	var issues []struct {
+		HookBead string `json:"hook_bead"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil || len(issues) == 0 {
+		return ""
+	}
+	return issues[0].HookBead
 }
 
 // identityToAgentBeadID maps a daemon identity to an agent bead ID.
@@ -879,7 +910,7 @@ func (d *Daemon) checkGUPPViolations() {
 func (d *Daemon) checkRigGUPPViolations(rigName string) {
 	// List polecat agent beads for this rig
 	// Pattern: <prefix>-<rig>-polecat-<name> (e.g., gt-gastown-polecat-Toast)
-	cmd := exec.Command(d.bdPath, "list", "--type=agent", "--json")
+	cmd := exec.Command(d.bdPath, "list", "--label=gt:agent", "--json")
 	cmd.Dir = d.config.TownRoot
 	cmd.Env = os.Environ() // Inherit PATH to find bd executable
 
@@ -891,7 +922,6 @@ func (d *Daemon) checkRigGUPPViolations(rigName string) {
 
 	var agents []struct {
 		ID          string `json:"id"`
-		Type        string `json:"issue_type"`
 		Description string `json:"description"`
 		UpdatedAt   string `json:"updated_at"`
 		HookBead    string `json:"hook_bead"` // Read from database column, not description
@@ -979,7 +1009,7 @@ func (d *Daemon) checkOrphanedWork() {
 
 // checkRigOrphanedWork checks polecats in a specific rig for orphaned work.
 func (d *Daemon) checkRigOrphanedWork(rigName string) {
-	cmd := exec.Command(d.bdPath, "list", "--type=agent", "--json")
+	cmd := exec.Command(d.bdPath, "list", "--label=gt:agent", "--json")
 	cmd.Dir = d.config.TownRoot
 	cmd.Env = os.Environ() // Inherit PATH to find bd executable
 
@@ -1022,11 +1052,22 @@ func (d *Daemon) checkRigOrphanedWork(rigName string) {
 			continue
 		}
 
+		// TOCTOU guard: re-verify agent state before taking action.
+		// Between the bd list above and now, the agent may have been
+		// restarted or its hook_bead cleared. Re-check both conditions.
+		if d.tmux.IsAgentAlive(sessionName) {
+			continue
+		}
+		currentHookBead := d.getAgentHookBead(agent.ID)
+		if currentHookBead == "" {
+			continue
+		}
+
 		// Session dead but has hooked work = orphaned!
 		d.logger.Printf("Orphaned work detected: agent %s session is dead but has hook_bead=%s",
-			agent.ID, agent.HookBead)
+			agent.ID, currentHookBead)
 
-		d.notifyWitnessOfOrphanedWork(rigName, agent.ID, agent.HookBead)
+		d.notifyWitnessOfOrphanedWork(rigName, agent.ID, currentHookBead)
 	}
 }
 

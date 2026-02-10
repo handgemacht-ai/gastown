@@ -164,7 +164,6 @@ func (d *Daemon) Run() error {
 	defer func() { _ = fileLock.Unlock() }()
 
 	// Pre-flight check: all rigs must be on Dolt backend.
-	// Refuse to start if any rig is still on SQLite.
 	if err := d.checkAllRigsDolt(); err != nil {
 		return err
 	}
@@ -413,7 +412,6 @@ func (d *Daemon) ensureDoltServerRunning() {
 }
 
 // checkAllRigsDolt verifies all rigs are using the Dolt backend.
-// Returns an error if any rig is on SQLite, preventing daemon startup.
 func (d *Daemon) checkAllRigsDolt() error {
 	var problems []string
 
@@ -450,9 +448,6 @@ func readBeadsBackend(beadsDir string) string {
 	metadataPath := filepath.Join(beadsDir, "metadata.json")
 	data, err := os.ReadFile(metadataPath)
 	if err != nil {
-		if _, statErr := os.Stat(filepath.Join(beadsDir, "beads.db")); statErr == nil {
-			return "sqlite"
-		}
 		return ""
 	}
 
@@ -463,9 +458,6 @@ func readBeadsBackend(beadsDir string) string {
 		return ""
 	}
 
-	if metadata.Backend == "" {
-		return "sqlite" // Default to SQLite if backend not specified
-	}
 	return metadata.Backend
 }
 
@@ -955,7 +947,7 @@ func (d *Daemon) processLifecycleRequests() {
 // 1. Pipe issues from errant db to town db (bd export | bd import)
 // 2. Remove the errant .beads directory
 //
-// This uses bd export/import which are backend-agnostic (work with SQLite or Dolt).
+// This uses bd export/import which are backend-agnostic.
 func (d *Daemon) cleanupTownServiceBeads() {
 	// Town-level service directories that should NOT have their own .beads
 	serviceDirs := []string{"mayor", "deacon"}
@@ -978,7 +970,7 @@ func (d *Daemon) cleanupTownServiceBeads() {
 
 		// Check if it has database files (the actual problem)
 		hasDB := false
-		dbPatterns := []string{"*.db", "beads.db", "hq.db", "dolt"}
+		dbPatterns := []string{"*.db", "dolt"}
 		for _, pattern := range dbPatterns {
 			matches, _ := filepath.Glob(filepath.Join(svcBeadsDir, pattern))
 			if len(matches) > 0 {
@@ -994,7 +986,7 @@ func (d *Daemon) cleanupTownServiceBeads() {
 		d.logger.Printf("Found errant .beads in %s - migrating to town beads", svc)
 
 		// Migrate: pipe export from errant db directly to import in town db
-		// This avoids temporary files and is backend-agnostic (works with SQLite or Dolt)
+		// This avoids temporary files and is backend-agnostic
 		if err := d.migrateBeadsToTown(svcBeadsDir, townBeadsDir); err != nil {
 			d.logger.Printf("Warning: failed to migrate %s/.beads: %v", svc, err)
 			continue
@@ -1010,7 +1002,7 @@ func (d *Daemon) cleanupTownServiceBeads() {
 }
 
 // migrateBeadsToTown pipes issues from source beads dir to town beads dir.
-// Uses bd export | bd import which is backend-agnostic (works with SQLite or Dolt).
+// Uses bd export | bd import which is backend-agnostic.
 func (d *Daemon) migrateBeadsToTown(srcBeadsDir, dstBeadsDir string) error {
 	// Kill any bd daemon for the source beads directory first.
 	// The daemon holds the database lock, preventing export from reading.
@@ -1473,6 +1465,14 @@ func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 		// An orphan with a dead session doesn't need restart - it needs cleanup.
 		// Let the Witness handle orphan detection/cleanup during patrol.
 		return
+	}
+
+	// TOCTOU guard: re-verify session is still dead before restarting.
+	// Between the initial check and now, the session may have been restarted
+	// by another heartbeat cycle, witness, or the polecat itself.
+	sessionRevived, err := d.tmux.HasSession(sessionName)
+	if err == nil && sessionRevived {
+		return // Session came back - no restart needed
 	}
 
 	// Polecat has work but session is dead - this is a crash!

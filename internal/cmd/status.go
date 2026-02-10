@@ -992,7 +992,7 @@ func discoverGlobalAgents(allSessions map[string]bool, allAgentBeads map[string]
 
 			// Look up agent bead from preloaded map (O(1))
 			if issue, ok := allAgentBeads[d.beadID]; ok {
-				// Prefer SQLite columns over description parsing
+				// Prefer database columns over description parsing
 				// HookBead column is authoritative (cleared by unsling)
 				agent.HookBead = issue.HookBead
 				agent.State = issue.AgentState
@@ -1003,7 +1003,7 @@ func discoverGlobalAgents(allSessions map[string]bool, allAgentBeads map[string]
 						agent.WorkTitle = pinnedIssue.Title
 					}
 				}
-				// Fallback to description for legacy beads without SQLite columns
+				// Fallback to description for legacy beads without database columns
 				if agent.State == "" {
 					fields := beads.ParseAgentFields(issue.Description)
 					if fields != nil {
@@ -1132,7 +1132,7 @@ func discoverRigAgents(allSessions map[string]bool, r *rig.Rig, crews []string, 
 
 			// Look up agent bead from preloaded map (O(1))
 			if issue, ok := allAgentBeads[d.beadID]; ok {
-				// Prefer SQLite columns over description parsing
+				// Prefer database columns over description parsing
 				// HookBead column is authoritative (cleared by unsling)
 				agent.HookBead = issue.HookBead
 				agent.State = issue.AgentState
@@ -1143,7 +1143,7 @@ func discoverRigAgents(allSessions map[string]bool, r *rig.Rig, crews []string, 
 						agent.WorkTitle = pinnedIssue.Title
 					}
 				}
-				// Fallback to description for legacy beads without SQLite columns
+				// Fallback to description for legacy beads without database columns
 				if agent.State == "" {
 					fields := beads.ParseAgentFields(issue.Description)
 					if fields != nil {

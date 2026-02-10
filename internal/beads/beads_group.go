@@ -187,52 +187,68 @@ func (b *Beads) GetGroupByID(id string) (*Issue, *GroupFields, error) {
 }
 
 // UpdateGroupMembers updates the members list for a group.
-func (b *Beads) UpdateGroupMembers(name string, members []string) error {
+func (b *Beads) UpdateGroupMembers(name string, members []string) (*Issue, error) {
 	issue, fields, err := b.GetGroupBead(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if issue == nil {
-		return fmt.Errorf("group %q not found", name)
+		return nil, fmt.Errorf("group %q not found", name)
 	}
 
 	fields.Members = members
 	description := FormatGroupDescription(issue.Title, fields)
 
-	return b.Update(issue.ID, UpdateOptions{Description: &description})
+	if err := b.Update(issue.ID, UpdateOptions{Description: &description}); err != nil {
+		return nil, err
+	}
+
+	updated, err := b.Show(issue.ID)
+	if err != nil {
+		return nil, fmt.Errorf("fetching updated group: %w", err)
+	}
+	return updated, nil
 }
 
 // AddGroupMember adds a member to a group if not already present.
-func (b *Beads) AddGroupMember(name string, member string) error {
+func (b *Beads) AddGroupMember(name string, member string) (*Issue, error) {
 	issue, fields, err := b.GetGroupBead(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if issue == nil {
-		return fmt.Errorf("group %q not found", name)
+		return nil, fmt.Errorf("group %q not found", name)
 	}
 
 	// Check if already a member
 	for _, m := range fields.Members {
 		if m == member {
-			return nil // Already a member
+			return issue, nil // Already a member
 		}
 	}
 
 	fields.Members = append(fields.Members, member)
 	description := FormatGroupDescription(issue.Title, fields)
 
-	return b.Update(issue.ID, UpdateOptions{Description: &description})
+	if err := b.Update(issue.ID, UpdateOptions{Description: &description}); err != nil {
+		return nil, err
+	}
+
+	updated, err := b.Show(issue.ID)
+	if err != nil {
+		return nil, fmt.Errorf("fetching updated group: %w", err)
+	}
+	return updated, nil
 }
 
 // RemoveGroupMember removes a member from a group.
-func (b *Beads) RemoveGroupMember(name string, member string) error {
+func (b *Beads) RemoveGroupMember(name string, member string) (*Issue, error) {
 	issue, fields, err := b.GetGroupBead(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if issue == nil {
-		return fmt.Errorf("group %q not found", name)
+		return nil, fmt.Errorf("group %q not found", name)
 	}
 
 	// Filter out the member
@@ -246,7 +262,15 @@ func (b *Beads) RemoveGroupMember(name string, member string) error {
 	fields.Members = newMembers
 	description := FormatGroupDescription(issue.Title, fields)
 
-	return b.Update(issue.ID, UpdateOptions{Description: &description})
+	if err := b.Update(issue.ID, UpdateOptions{Description: &description}); err != nil {
+		return nil, err
+	}
+
+	updated, err := b.Show(issue.ID)
+	if err != nil {
+		return nil, fmt.Errorf("fetching updated group: %w", err)
+	}
+	return updated, nil
 }
 
 // DeleteGroupBead permanently deletes a group bead.

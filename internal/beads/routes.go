@@ -142,6 +142,10 @@ func WriteRoutes(beadsDir string, routes []Route) error {
 		}
 	}
 
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("syncing routes file: %w", err)
+	}
+
 	return nil
 }
 

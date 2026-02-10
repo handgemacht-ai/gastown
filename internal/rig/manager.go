@@ -391,9 +391,8 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	fmt.Printf("   ✓ Created mayor clone\n")
 
 	// Check if source repo has tracked .beads/ directory.
-	// If so, we need to initialize the database (beads.db is gitignored so it doesn't exist after clone).
+	// If so, we need to initialize the database (it doesn't exist after clone since DB files are gitignored).
 	sourceBeadsDir := filepath.Join(mayorRigPath, ".beads")
-	sourceBeadsDB := filepath.Join(sourceBeadsDir, "beads.db")
 	if _, err := os.Stat(sourceBeadsDir); err == nil {
 		// Remove any redirect file that might have been accidentally tracked.
 		// Redirect files are runtime/local config and should not be in git.
@@ -422,9 +421,9 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		}
 
 		// Initialize bd database if it doesn't exist.
-		// beads.db is gitignored so it won't exist after clone - we need to create it.
+		// DB files are gitignored so they won't exist after clone — bd init creates them.
 		// bd init --prefix will create the database and auto-import from issues.jsonl.
-		if _, err := os.Stat(sourceBeadsDB); os.IsNotExist(err) {
+		if !bdDatabaseExists(sourceBeadsDir) {
 			cmd := exec.Command("bd", "--no-daemon", "init", "--prefix", opts.BeadsPrefix, "--backend", "dolt") // opts.BeadsPrefix validated earlier
 			cmd.Dir = mayorRigPath
 			if output, err := cmd.CombinedOutput(); err != nil {
@@ -694,7 +693,6 @@ func (m *Manager) initBeads(rigPath, prefix string) error {
 	_, _ = migrateCmd.CombinedOutput()
 
 	// Ensure issues.jsonl exists to prevent bd auto-export from corrupting other files.
-	// bd init creates beads.db but not issues.jsonl in SQLite mode.
 	// Without issues.jsonl, bd's auto-export might write issues to other .jsonl files.
 	issuesJSONL := filepath.Join(beadsDir, "issues.jsonl")
 	if _, err := os.Stat(issuesJSONL); os.IsNotExist(err) {
@@ -882,6 +880,16 @@ var beadsPrefixRegexp = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9-]{0,19}$`)
 // malicious config files.
 func isValidBeadsPrefix(prefix string) bool {
 	return beadsPrefixRegexp.MatchString(prefix)
+}
+
+// bdDatabaseExists checks if a beads directory has an initialized database.
+// Checks for Dolt metadata (the standard backend).
+func bdDatabaseExists(beadsDir string) bool {
+	metadataPath := filepath.Join(beadsDir, "metadata.json")
+	if _, err := os.Stat(metadataPath); err == nil {
+		return true
+	}
+	return false
 }
 
 // When adding a rig from a source repo that has .beads/ tracked in git (like a project
